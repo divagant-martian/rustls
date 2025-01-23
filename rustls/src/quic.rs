@@ -712,11 +712,13 @@ pub trait PacketKey: Send + Sync {
     /// See <https://www.ietf.org/archive/id/draft-ietf-quic-multipath-11.html#name-nonce-calculation>.
     fn encrypt_in_place_multipath(
         &self,
-        path_id: u32,
-        packet_number: u64,
-        header: &[u8],
-        payload: &mut [u8],
-    ) -> Result<Tag, Error>;
+        _path_id: u32,
+        _packet_number: u64,
+        _header: &[u8],
+        _payload: &mut [u8],
+    ) -> Result<Tag, Error> {
+        Err(Error::EncryptError)
+    }
 
     /// Decrypt a QUIC packet
     ///
@@ -744,11 +746,13 @@ pub trait PacketKey: Send + Sync {
     /// See <https://www.ietf.org/archive/id/draft-ietf-quic-multipath-11.html#name-nonce-calculation>.
     fn decrypt_in_place_multipath<'a>(
         &self,
-        path_id: u32,
-        packet_number: u64,
-        header: &[u8],
-        payload: &'a mut [u8],
-    ) -> Result<&'a [u8], Error>;
+        _path_id: u32,
+        _packet_number: u64,
+        _header: &[u8],
+        _payload: &'a mut [u8],
+    ) -> Result<&'a [u8], Error> {
+        Err(Error::DecryptError)
+    }
 
     /// Tag length for the underlying AEAD algorithm
     fn tag_len(&self) -> usize;
