@@ -710,7 +710,7 @@ pub trait PacketKey: Send + Sync {
     /// Fails if and only if the payload is longer than allowed by the cipher suite's AEAD algorithm.
     ///
     /// See <https://www.ietf.org/archive/id/draft-ietf-quic-multipath-11.html#name-nonce-calculation>.
-    fn encrypt_in_place_multipath(
+    fn encrypt_in_place_for_path(
         &self,
         _path_id: u32,
         _packet_number: u64,
@@ -744,7 +744,7 @@ pub trait PacketKey: Send + Sync {
     /// length found in the return value.
     ///
     /// See <https://www.ietf.org/archive/id/draft-ietf-quic-multipath-11.html#name-nonce-calculation>.
-    fn decrypt_in_place_multipath<'a>(
+    fn decrypt_in_place_for_path<'a>(
         &self,
         _path_id: u32,
         _packet_number: u64,

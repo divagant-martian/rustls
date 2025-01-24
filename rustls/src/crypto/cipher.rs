@@ -222,7 +222,7 @@ impl Nonce {
     ///
     /// The nonce is computed as the XOR between the `iv` and the 96-bit big-ending integer formed
     /// by concatenating `path_id` and `pn`.
-    pub fn new_multipath(iv: &Iv, pn: u64, path_id: u32) -> Self {
+    pub fn for_path(path_id: u32, iv: &Iv, pn: u64) -> Self {
         let mut seq_bytes = [0u8; NONCE_LEN];
         seq_bytes[0..4].copy_from_slice(&path_id.to_be_bytes());
         codec::put_u64(pn, &mut seq_bytes[4..]);
@@ -231,7 +231,7 @@ impl Nonce {
 
     /// Creates a unique nonce based on the `iv` and sequence number `seq`.
     #[inline]
-    pub fn new_from_seq(iv: &Iv, mut seq: [u8; NONCE_LEN]) -> Self {
+    fn new_from_seq(iv: &Iv, mut seq: [u8; NONCE_LEN]) -> Self {
         seq.iter_mut()
             .zip(iv.0.iter())
             .for_each(|(s, iv)| {

@@ -140,7 +140,7 @@ impl quic::PacketKey for PacketKey {
         Ok(quic::Tag::from(tag.as_ref()))
     }
 
-    fn encrypt_in_place_multipath(
+    fn encrypt_in_place_for_path(
         &self,
         path_id: u32,
         packet_number: u64,
@@ -148,9 +148,8 @@ impl quic::PacketKey for PacketKey {
         payload: &mut [u8],
     ) -> Result<quic::Tag, Error> {
         let aad = aead::Aad::from(header);
-        let nonce = aead::Nonce::assume_unique_for_key(
-            Nonce::new_multipath(&self.iv, packet_number, path_id).0,
-        );
+        let nonce =
+            aead::Nonce::assume_unique_for_key(Nonce::for_path(path_id, &self.iv, packet_number).0);
         let tag = self
             .key
             .seal_in_place_separate_tag(nonce, aad, payload)
@@ -182,7 +181,7 @@ impl quic::PacketKey for PacketKey {
         Ok(&payload[..plain_len])
     }
 
-    fn decrypt_in_place_multipath<'a>(
+    fn decrypt_in_place_for_path<'a>(
         &self,
         path_id: u32,
         packet_number: u64,
@@ -191,9 +190,8 @@ impl quic::PacketKey for PacketKey {
     ) -> Result<&'a [u8], Error> {
         let payload_len = payload.len();
         let aad = aead::Aad::from(header);
-        let nonce = aead::Nonce::assume_unique_for_key(
-            Nonce::new_multipath(&self.iv, packet_number, path_id).0,
-        );
+        let nonce =
+            aead::Nonce::assume_unique_for_key(Nonce::for_path(path_id, &self.iv, packet_number).0);
         self.key
             .open_in_place(nonce, aad, payload)
             .map_err(|_| Error::DecryptError)?;
@@ -453,7 +451,9 @@ mod tests {
     }
 
     // This test is based on picoquic's output for `multipath_aead_test` in
-    // `picoquictest/multipath_test.c`
+    // `picoquictest/multipath_test.c`.
+    //
+    // See <https://github.com/private-octopus/picoquic/blob/be0d99e6d4f8759cb7920425351c06a1c6f4a958/picoquictest/multipath_test.c#L1537-L1606>
     #[test]
     fn test_multipath_aead_basic() {
         const SECRET: &[u8; 32] = &[
@@ -485,7 +485,7 @@ mod tests {
         let packet = builder.packet_key();
         let mut buf = PAYLOAD.to_vec();
         let tag = packet
-            .encrypt_in_place_multipath(PATH_ID, PN, HEADER, &mut buf)
+            .encrypt_in_place_for_path(PATH_ID, PN, HEADER, &mut buf)
             .unwrap();
         buf.extend_from_slice(tag.as_ref());
 
@@ -493,6 +493,8 @@ mod tests {
     }
 
     // This test is based on `multipath_aead_test` in `picoquictest/multipath_test.c`
+    //
+    // See <https://github.com/private-octopus/picoquic/blob/be0d99e6d4f8759cb7920425351c06a1c6f4a958/picoquictest/multipath_test.c#L1537-L1606>
     #[test]
     fn test_multipath_aead_roundtrip() {
         const SECRET: &[u8; 32] = &[
@@ -519,11 +521,11 @@ mod tests {
         for &path_id in TEST_PATH_IDS {
             let mut buf = PAYLOAD.to_vec();
             let tag = packet
-                .encrypt_in_place_multipath(path_id, PN, HEADER, &mut buf)
+                .encrypt_in_place_for_path(path_id, PN, HEADER, &mut buf)
                 .unwrap();
             buf.extend_from_slice(tag.as_ref());
             let decrypted = packet
-                .decrypt_in_place_multipath(path_id, PN, HEADER, &mut buf)
+                .decrypt_in_place_for_path(path_id, PN, HEADER, &mut buf)
                 .unwrap();
             assert_eq!(decrypted, PAYLOAD);
         }
