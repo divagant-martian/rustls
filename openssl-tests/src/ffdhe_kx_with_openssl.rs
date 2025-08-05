@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::{fs, str, thread};
 
 use openssl::ssl::{SslAcceptor, SslFiletype, SslMethod};
-use rustls::crypto::{aws_lc_rs as provider, CryptoProvider};
+use rustls::crypto::{CryptoProvider, aws_lc_rs as provider};
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::version::{TLS12, TLS13};
@@ -31,10 +31,10 @@ fn test_rustls_server_with_ffdhe_kx(
 
     let message = "Hello from rustls!\n";
 
-    let listener = std::net::TcpListener::bind(("localhost", 0)).unwrap();
+    let listener = TcpListener::bind(("localhost", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
 
-    let server_thread = std::thread::spawn(move || {
+    let server_thread = thread::spawn(move || {
         let config = Arc::new(server_config_with_ffdhe_kx(protocol_version));
         for _ in 0..iters {
             let mut server = rustls::ServerConnection::new(config.clone()).unwrap();
@@ -102,7 +102,7 @@ fn test_rustls_client_with_ffdhe_kx(iters: usize) {
     let listener = TcpListener::bind(("localhost", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
 
-    let server_thread = std::thread::spawn(move || {
+    let server_thread = thread::spawn(move || {
         for stream in listener.incoming().take(iters) {
             match stream {
                 Ok(stream) => {
@@ -123,7 +123,7 @@ fn test_rustls_client_with_ffdhe_kx(iters: usize) {
 
     // client:
     for _ in 0..iters {
-        let mut tcp_stream = std::net::TcpStream::connect(("localhost", port)).unwrap();
+        let mut tcp_stream = TcpStream::connect(("localhost", port)).unwrap();
         let mut client = rustls::client::ClientConnection::new(
             client_config_with_ffdhe_kx().into(),
             "localhost".try_into().unwrap(),

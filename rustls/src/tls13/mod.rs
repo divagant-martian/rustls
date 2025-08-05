@@ -3,13 +3,27 @@ use core::fmt;
 use crate::crypto;
 use crate::crypto::hash;
 use crate::suites::{CipherSuiteCommon, SupportedCipherSuite};
+use crate::version::Tls13Version;
 
 pub(crate) mod key_schedule;
 
 /// A TLS 1.3 cipher suite supported by rustls.
+#[allow(clippy::exhaustive_structs)]
 pub struct Tls13CipherSuite {
     /// Common cipher suite fields.
     pub common: CipherSuiteCommon,
+
+    /// The associated protocol version.
+    ///
+    /// This field should have the value [`rustls::version::TLS13_VERSION`].
+    ///
+    /// This value contains references to the TLS1.3 protocol handling code.
+    /// This means that a program that does not contain any `Tls13CipherSuite`
+    /// values also does not contain any reference to the TLS1.3 protocol handling
+    /// code, and the linker can remove it.
+    ///
+    /// [`rustls::version::TLS13_VERSION`]: crate::version::TLS13_VERSION
+    pub protocol_version: &'static Tls13Version,
 
     /// How to complete HKDF with the suite's hash function.
     ///
@@ -48,6 +62,7 @@ impl Tls13CipherSuite {
     pub fn fips(&self) -> bool {
         let Self {
             common,
+            protocol_version: _,
             hkdf_provider,
             aead_alg,
             quic,

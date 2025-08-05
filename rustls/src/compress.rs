@@ -102,6 +102,7 @@ pub trait CertCompressor: Debug + Send + Sync {
 }
 
 /// A hint for how many resources to dedicate to a compression.
+#[non_exhaustive]
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum CompressionLevel {
     /// This compression is happening interactively during a handshake.
@@ -116,17 +117,19 @@ pub enum CompressionLevel {
 }
 
 /// A content-less error for when `CertDecompressor::decompress` fails.
+#[allow(clippy::exhaustive_structs)]
 #[derive(Debug)]
 pub struct DecompressionFailed;
 
 /// A content-less error for when `CertCompressor::compress` fails.
+#[allow(clippy::exhaustive_structs)]
 #[derive(Debug)]
 pub struct CompressionFailed;
 
 #[cfg(feature = "zlib")]
 mod feat_zlib_rs {
     use zlib_rs::c_api::Z_BEST_COMPRESSION;
-    use zlib_rs::{deflate, inflate, ReturnCode};
+    use zlib_rs::{ReturnCode, deflate, inflate};
 
     use super::*;
 
@@ -271,6 +274,7 @@ pub use feat_brotli::{BROTLI_COMPRESSOR, BROTLI_DECOMPRESSOR};
 /// The prospect of being able to reuse a given compression for many connections
 /// means we can afford to spend more time on that compression (by passing
 /// `CompressionLevel::Amortized` to the compressor).
+#[allow(clippy::exhaustive_enums)]
 #[derive(Debug)]
 pub enum CompressionCache {
     /// No caching happens, and compression happens each time using
@@ -358,7 +362,7 @@ impl CompressionCache {
             if item.algorithm == algorithm && item.original == encoding {
                 // this item is now MRU
                 let item = cache.remove(i).unwrap();
-                cache.push_back(Arc::clone(&item));
+                cache.push_back(item.clone());
                 return Ok(item);
             }
         }
@@ -384,7 +388,7 @@ impl CompressionCache {
         if cache.len() == max_size {
             cache.pop_front();
         }
-        cache.push_back(Arc::clone(&new_entry));
+        cache.push_back(new_entry.clone());
         Ok(new_entry)
     }
 

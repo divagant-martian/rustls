@@ -5,14 +5,14 @@ permissions:
 
 on:
   push:
-    branches-ignore:
-    - 'gh-readonly-queue/**'
+    branches: ['main', 'rel-*', 'ci/*']
     tags:
     - '**'
   pull_request:
   merge_group:
   schedule:
     - cron: '0 18 * * *'
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
@@ -62,13 +62,13 @@ jobs:
 
       - name: Install ninja-build tool for aws-lc-fips-sys on Windows
         if: runner.os == 'Windows'
-        uses: seanmiddleditch/gha-setup-ninja@v5
+        uses: seanmiddleditch/gha-setup-ninja@v6
 
       - name: Install golang for aws-lc-fips-sys on macos
         if: runner.os == 'MacOS'
         uses: actions/setup-go@v5
         with:
-          go-version: "1.22.2"
+          go-version: "1.24.3"
 
       - name: cargo build (debug; default features)
         run: cargo build --locked
@@ -89,14 +89,17 @@ jobs:
           RUST_BACKTRACE: 1
 
       - name: cargo test (debug; aws-lc-rs)
-        run: cargo test --no-default-features --features aws_lc_rs,tls12,read_buf,logging,std --all-targets
+        run: cargo test --no-default-features --features aws-lc-rs,log,std --all-targets
         env:
           RUST_BACKTRACE: 1
 
       - name: cargo test (release; fips)
-        run: cargo test --release --no-default-features --features fips,tls12,read_buf,logging,std --all-targets
+        run: cargo test --release --no-default-features --features fips,log,std --all-targets
         env:
           RUST_BACKTRACE: 1
+
+      - name: cargo build (debug; no-std)
+        run: cargo build --locked --lib -p rustls $(admin/all-features-except std,brotli rustls)
 
       - name: cargo build (debug; rustls-provider-example)
         run: cargo build --locked -p rustls-provider-example
@@ -127,14 +130,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.71"
-
-      # zlib-rs is optional and requires a later MSRV
-      - run: cargo check --locked --lib $(admin/all-features-except zlib rustls) -p rustls
-
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: "1.75"
+          toolchain: "1.79"
 
       - run: cargo check --locked --lib --all-features -p rustls
 
@@ -176,16 +172,16 @@ jobs:
         run: cargo test --locked --no-default-features
         working-directory: rustls
 
-      - name: cargo test (debug; no default features; tls12)
-        run: cargo test --locked --no-default-features --features tls12,std
+      - name: cargo test (debug; no default features; std)
+        run: cargo test --locked --no-default-features --features std
         working-directory: rustls
 
-      - name: cargo test (debug; no default features; aws-lc-rs,tls12)
-        run: cargo test --no-default-features --features aws_lc_rs,tls12,std
+      - name: cargo test (debug; no default features; std+aws-lc-rs)
+        run: cargo test --no-default-features --features aws-lc-rs,std
         working-directory: rustls
 
-      - name: cargo test (debug; no default features; fips,tls12)
-        run: cargo test --no-default-features --features fips,tls12,std
+      - name: cargo test (debug; no default features; std+fips)
+        run: cargo test --no-default-features --features fips,std
         working-directory: rustls
 
       - name: cargo test (release; no run)
@@ -207,7 +203,7 @@ jobs:
       - name: Install golang toolchain
         uses: actions/setup-go@v5
         with:
-          go-version: "1.21"
+          go-version: "1.24"
           cache: false
 
       - name: Run test suite (ring)
@@ -228,12 +224,6 @@ jobs:
         env:
           BOGO_SHIM_PROVIDER: aws-lc-rs-fips
 
-      - name: Run test suite (post-quantum)
-        working-directory: bogo
-        run: ./runme
-        env:
-          BOGO_SHIM_PROVIDER: post-quantum
-
   fuzz:
     name: Smoke-test fuzzing targets
     runs-on: ubuntu-latest
@@ -247,7 +237,9 @@ jobs:
         uses: dtolnay/rust-toolchain@nightly
 
       - name: Install cargo fuzz
-        run: cargo install cargo-fuzz
+        uses: taiki-e/cache-cargo-install-action@v2
+        with:
+          tool: cargo-fuzz
 
       - name: Smoke-test fuzz targets
         run: |
@@ -316,12 +308,14 @@ jobs:
           persist-credentials: false
 
       - name: Install rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@nightly
         with:
           components: llvm-tools
 
       - name: Install cargo-llvm-cov
-        run: cargo install cargo-llvm-cov
+        uses: taiki-e/cache-cargo-install-action@v2
+        with:
+          tool: cargo-llvm-cov
 
       - name: Measure coverage
         run: ./admin/coverage --lcov --output-path final.info
@@ -385,11 +379,20 @@ jobs:
 
       - name: Install rust toolchain
         uses: dtolnay/rust-toolchain@stable
-      - name: Install cross (cross-rs) from GitHub
-        run: cargo install cross --git https://github.com/cross-rs/cross
-      - name: Install bindgen feature & CLI for aws-lc-sys (as needed for many cross targets)
+      - name: Install cross
+        uses: taiki-e/cache-cargo-install-action@v2
+        with:
+          tool: cross
+          git: https://github.com/cross-rs/cross
+          # known-working main in feb 2025, bump as needed
+          rev: c7dee4d
+      - name: Install bindgen-cli
+        uses: taiki-e/cache-cargo-install-action@v2
+        with:
+          tool: bindgen-cli
+      - name: Enable bindgen feature for aws-lc-sys (as needed for many cross targets)
         if: ${{ matrix.target != 'i686-unknown-linux-gnu' }}
-        run: cargo add --dev --features bindgen 'aws-lc-sys@>0.20' --package rustls --verbose && cargo install bindgen-cli --verbose
+        run: cargo add --dev --features bindgen 'aws-lc-sys@>0.20' --package rustls --verbose
       - run: cross test --package rustls --target ${{ matrix.target }}
 
   semver:
@@ -432,19 +435,17 @@ jobs:
         with:
           persist-credentials: false
       - name: Install rust nightly toolchain
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@nightly
         with:
           components: rustfmt
-          toolchain: nightly-2024-02-21
       - name: Check formatting (unstable)
         run: cargo fmt --all -- --check --config-path .rustfmt.unstable.toml
-        continue-on-error: true
       - name: Check formatting (unstable, connect-tests workspace)
         run: cargo fmt --all --manifest-path=connect-tests/Cargo.toml -- --check --config-path .rustfmt.unstable.toml
-        continue-on-error: true
       - name: Check formatting (unstable, fuzz workspace)
         run: cargo fmt --all --manifest-path=fuzz/Cargo.toml -- --check --config-path .rustfmt.unstable.toml
-        continue-on-error: true
+      - if: ${{ failure() }}
+        run: echo "Nightly formatting check failed. Please run \`cargo +nightly fmt-unstable\`"
 
   clippy:
     name: Clippy
@@ -463,12 +464,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      # We want to be free of any warnings, so deny them.
-      # - Allow `clippy::disallowed_types` as a workaround since `disallowed_types` configured in `.clippy.toml`
-      #   is only intended for the main `rustls` crate.
-      - run: ./admin/clippy -- --deny warnings --allow clippy::disallowed_types
-      # - Keep the main crate free of all warnings.
-      - run: cargo clippy -p rustls -- --deny warnings
+      - run: ./admin/clippy -- --deny warnings
 
   clippy-nightly:
     name: Clippy (Nightly)
@@ -488,11 +484,7 @@ jobs:
         with:
           components: clippy
       # Do not deny warnings, as nightly clippy sometimes has false negatives.
-      # - Ignore `clippy::disallowed_types` as a workaround since `disallowed_types` configured in `.clippy.toml`
-      #   is only intended for main `rustls` crate.
-      - run: ./admin/clippy -- --allow clippy::disallowed_types
-      # Check the main crate for any Clippy nightly warnings, but do not deny them.
-      - run: cargo clippy -p rustls
+      - run: ./admin/clippy
 
   check-external-types:
     name: Validate external types appearing in public API
@@ -505,26 +497,32 @@ jobs:
       - name: Install rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2024-06-30
+          toolchain: nightly-2025-05-04
           # ^ sync with https://github.com/awslabs/cargo-check-external-types/blob/main/rust-toolchain.toml
-      - run: cargo install --locked cargo-check-external-types
+      - name: Install cargo-check-external-types
+        uses: taiki-e/cache-cargo-install-action@v2
+        with:
+          tool: cargo-check-external-types
       - name: run cargo-check-external-types for rustls/
         working-directory: rustls/
         run: cargo check-external-types
 
   taplo:
-      name: Taplo
-      runs-on: ubuntu-latest
-      steps:
-        - name: Checkout sources
-          uses: actions/checkout@v4
-          with:
-            persist-credentials: false
+    name: Taplo
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
-        - name: Install rust toolchain
-          uses: dtolnay/rust-toolchain@stable
-        - run: cargo install taplo-cli --locked
-        - run: taplo format --check
+      - name: Install rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install taplo-cli
+        uses: taiki-e/cache-cargo-install-action@v2
+        with:
+          tool: taplo-cli
+      - run: taplo format --check
 
   openssl-tests:
     name: Run openssl-tests
@@ -571,3 +569,9 @@ jobs:
         run: cargo test --locked -- --include-ignored
         env:
           RUST_BACKTRACE: 1
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: EmbarkStudios/cargo-deny-action@v2

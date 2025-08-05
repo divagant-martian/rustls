@@ -1,5 +1,5 @@
 use crate::enums::{AlertDescription, ContentType, HandshakeType, ProtocolVersion};
-use crate::error::{Error, InvalidMessage};
+use crate::error::InvalidMessage;
 use crate::msgs::alert::AlertMessagePayload;
 use crate::msgs::base::Payload;
 use crate::msgs::ccs::ChangeCipherSpecPayload;
@@ -16,6 +16,7 @@ use alloc::vec::Vec;
 pub(crate) use outbound::read_opaque_message_header;
 pub use outbound::{OutboundChunks, OutboundOpaqueMessage, OutboundPlainMessage, PrefixedPayload};
 
+#[non_exhaustive]
 #[derive(Debug)]
 pub enum MessagePayload<'a> {
     Alert(AlertMessagePayload),
@@ -118,6 +119,7 @@ impl From<Message<'_>> for PlainMessage {
 ///
 /// This type owns all memory for its interior parts. It can be decrypted from an OpaqueMessage
 /// or encrypted into an OpaqueMessage, and it is also used for joining and fragmenting.
+#[allow(clippy::exhaustive_structs)]
 #[derive(Clone, Debug)]
 pub struct PlainMessage {
     pub typ: ContentType,
@@ -152,6 +154,7 @@ impl PlainMessage {
 }
 
 /// A message with decoded payload
+#[allow(clippy::exhaustive_structs)]
 #[derive(Debug)]
 pub struct Message<'a> {
     pub version: ProtocolVersion,
@@ -162,7 +165,7 @@ impl Message<'_> {
     pub fn is_handshake_type(&self, hstyp: HandshakeType) -> bool {
         // Bit of a layering violation, but OK.
         if let MessagePayload::Handshake { parsed, .. } = &self.payload {
-            parsed.typ == hstyp
+            parsed.0.handshake_type() == hstyp
         } else {
             false
         }
@@ -181,20 +184,18 @@ impl Message<'_> {
     pub fn build_key_update_notify() -> Self {
         Self {
             version: ProtocolVersion::TLSv1_3,
-            payload: MessagePayload::handshake(HandshakeMessagePayload {
-                typ: HandshakeType::KeyUpdate,
-                payload: HandshakePayload::KeyUpdate(KeyUpdateRequest::UpdateNotRequested),
-            }),
+            payload: MessagePayload::handshake(HandshakeMessagePayload(
+                HandshakePayload::KeyUpdate(KeyUpdateRequest::UpdateNotRequested),
+            )),
         }
     }
 
     pub fn build_key_update_request() -> Self {
         Self {
             version: ProtocolVersion::TLSv1_3,
-            payload: MessagePayload::handshake(HandshakeMessagePayload {
-                typ: HandshakeType::KeyUpdate,
-                payload: HandshakePayload::KeyUpdate(KeyUpdateRequest::UpdateRequested),
-            }),
+            payload: MessagePayload::handshake(HandshakeMessagePayload(
+                HandshakePayload::KeyUpdate(KeyUpdateRequest::UpdateRequested),
+            )),
         }
     }
 
@@ -206,10 +207,17 @@ impl Message<'_> {
             payload: payload.into_owned(),
         }
     }
+
+    #[cfg(test)]
+    pub(crate) fn into_wire_bytes(self) -> Vec<u8> {
+        PlainMessage::from(self)
+            .into_unencrypted_opaque()
+            .encode()
+    }
 }
 
 impl TryFrom<PlainMessage> for Message<'static> {
-    type Error = Error;
+    type Error = InvalidMessage;
 
     fn try_from(plain: PlainMessage) -> Result<Self, Self::Error> {
         Ok(Self {
@@ -225,7 +233,7 @@ impl TryFrom<PlainMessage> for Message<'static> {
 /// A [`PlainMessage`] must contain plaintext content. Encrypted content should be stored in an
 /// [`InboundOpaqueMessage`] and decrypted before being stored into a [`PlainMessage`].
 impl<'a> TryFrom<InboundPlainMessage<'a>> for Message<'a> {
-    type Error = Error;
+    type Error = InvalidMessage;
 
     fn try_from(plain: InboundPlainMessage<'a>) -> Result<Self, Self::Error> {
         Ok(Self {

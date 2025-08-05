@@ -1,9 +1,11 @@
-use aws_lc_rs::kem;
-use rustls::crypto::{ActiveKeyExchange, CompletedKeyExchange, SharedSecret, SupportedKxGroup};
-use rustls::ffdhe_groups::FfdheGroup;
-use rustls::{Error, NamedGroup, ProtocolVersion};
+use alloc::boxed::Box;
+use alloc::vec::Vec;
 
-use crate::INVALID_KEY_SHARE;
+use aws_lc_rs::kem;
+
+use super::INVALID_KEY_SHARE;
+use crate::crypto::{ActiveKeyExchange, CompletedKeyExchange, SharedSecret, SupportedKxGroup};
+use crate::{Error, NamedGroup};
 
 #[derive(Debug)]
 pub(crate) struct MlKem768;
@@ -39,16 +41,24 @@ impl SupportedKxGroup for MlKem768 {
         })
     }
 
-    fn ffdhe_group(&self) -> Option<FfdheGroup<'static>> {
-        None
-    }
-
     fn name(&self) -> NamedGroup {
         NamedGroup::MLKEM768
     }
 
-    fn usable_for_version(&self, version: ProtocolVersion) -> bool {
-        version == ProtocolVersion::TLSv1_3
+    fn fips(&self) -> bool {
+        // AUDITORS:
+        // At the time of writing, the ML-KEM implementation in AWS-LC-FIPS module 3.0
+        // is FIPS-pending.  Some regulatory regimes (eg, FedRAMP rev 5 SC-13) allow
+        // use of implementations in this state, as if they are already approved.
+        //
+        // We follow this liberal interpretation, and say MlKem768 is FIPS-compliant
+        // if the underlying library is in FIPS mode.
+        //
+        // TODO: adjust the `fips()` function return type to allow more policies to
+        // be expressed, perhaps following something like
+        // <https://github.com/golang/go/issues/70200#issuecomment-2490017956> --
+        // see <https://github.com/rustls/rustls/issues/2309>
+        super::super::fips()
     }
 }
 
@@ -72,10 +82,6 @@ impl ActiveKeyExchange for Active {
 
     fn pub_key(&self) -> &[u8] {
         &self.encaps_key_bytes
-    }
-
-    fn ffdhe_group(&self) -> Option<FfdheGroup<'static>> {
-        None
     }
 
     fn group(&self) -> NamedGroup {

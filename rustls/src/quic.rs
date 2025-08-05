@@ -10,34 +10,37 @@ use crate::crypto::cipher::{AeadKey, Iv};
 use crate::crypto::tls13::{Hkdf, HkdfExpander, OkmBlock};
 use crate::enums::AlertDescription;
 use crate::error::Error;
+use crate::tls13::Tls13CipherSuite;
 use crate::tls13::key_schedule::{
     hkdf_expand_label, hkdf_expand_label_aead_key, hkdf_expand_label_block,
 };
-use crate::tls13::Tls13CipherSuite;
 
 #[cfg(feature = "std")]
 mod connection {
-    use alloc::vec;
     use alloc::vec::Vec;
     use core::fmt::{self, Debug};
     use core::ops::{Deref, DerefMut};
 
-    use pki_types::ServerName;
+    use pki_types::{DnsName, ServerName};
 
     use super::{DirectionalKeys, KeyChange, Version};
     use crate::client::{ClientConfig, ClientConnectionData};
-    use crate::common_state::{CommonState, Protocol, DEFAULT_BUFFER_LIMIT};
+    use crate::common_state::{CommonState, DEFAULT_BUFFER_LIMIT, Protocol};
     use crate::conn::{ConnectionCore, SideData};
     use crate::enums::{AlertDescription, ContentType, ProtocolVersion};
     use crate::error::Error;
+    use crate::msgs::base::Payload;
     use crate::msgs::deframer::buffers::{DeframerVecBuffer, Locator};
-    use crate::msgs::handshake::{ClientExtension, ServerExtension};
+    use crate::msgs::handshake::{
+        ClientExtensionsInput, ServerExtensionsInput, TransportParameters,
+    };
     use crate::msgs::message::InboundPlainMessage;
     use crate::server::{ServerConfig, ServerConnectionData};
     use crate::sync::Arc;
     use crate::vecbuf::ChunkVecBuffer;
 
     /// A QUIC client or server connection.
+    #[allow(clippy::exhaustive_enums)]
     #[derive(Debug)]
     pub enum Connection {
         /// A client connection
@@ -164,6 +167,23 @@ mod connection {
             name: ServerName<'static>,
             params: Vec<u8>,
         ) -> Result<Self, Error> {
+            Self::new_with_alpn(
+                config.clone(),
+                quic_version,
+                name,
+                params,
+                config.alpn_protocols.clone(),
+            )
+        }
+
+        /// Make a new QUIC ClientConnection with custom ALPN protocols.
+        pub fn new_with_alpn(
+            config: Arc<ClientConfig>,
+            quic_version: Version,
+            name: ServerName<'static>,
+            params: Vec<u8>,
+            alpn_protocols: Vec<Vec<u8>>,
+        ) -> Result<Self, Error> {
             if !config.supports_version(ProtocolVersion::TLSv1_3) {
                 return Err(Error::General(
                     "TLS 1.3 support is required for QUIC".into(),
@@ -176,12 +196,15 @@ mod connection {
                 ));
             }
 
-            let ext = match quic_version {
-                Version::V1Draft => ClientExtension::TransportParametersDraft(params),
-                Version::V1 | Version::V2 => ClientExtension::TransportParameters(params),
+            let exts = ClientExtensionsInput {
+                transport_parameters: Some(match quic_version {
+                    Version::V1 | Version::V2 => TransportParameters::Quic(Payload::new(params)),
+                }),
+
+                ..ClientExtensionsInput::from_alpn(alpn_protocols)
             };
 
-            let mut inner = ConnectionCore::for_client(config, name, vec![ext], Protocol::Quic)?;
+            let mut inner = ConnectionCore::for_client(config, name, exts, Protocol::Quic)?;
             inner.common_state.quic.version = quic_version;
             Ok(Self {
                 inner: inner.into(),
@@ -195,6 +218,11 @@ mod connection {
         /// is not an error, but you may wish to resend the data.
         pub fn is_early_data_accepted(&self) -> bool {
             self.inner.core.is_early_data_accepted()
+        }
+
+        /// Returns the number of TLS1.3 tickets that have been received.
+        pub fn tls13_tickets_received(&self) -> u32 {
+            self.inner.tls13_tickets_received
         }
     }
 
@@ -258,12 +286,13 @@ mod connection {
                 ));
             }
 
-            let ext = match quic_version {
-                Version::V1Draft => ServerExtension::TransportParametersDraft(params),
-                Version::V1 | Version::V2 => ServerExtension::TransportParameters(params),
+            let exts = ServerExtensionsInput {
+                transport_parameters: Some(match quic_version {
+                    Version::V1 | Version::V2 => TransportParameters::Quic(Payload::new(params)),
+                }),
             };
 
-            let mut core = ConnectionCore::for_server(config, vec![ext])?;
+            let mut core = ConnectionCore::for_server(config, exts)?;
             core.common_state.protocol = Protocol::Quic;
             core.common_state.quic.version = quic_version;
             Ok(Self { inner: core.into() })
@@ -293,8 +322,8 @@ mod connection {
         /// when the client provides the SNI extension.
         ///
         /// The server name is also used to match sessions during session resumption.
-        pub fn server_name(&self) -> Option<&str> {
-            self.inner.core.get_sni_str()
+        pub fn server_name(&self) -> Option<&DnsName<'_>> {
+            self.inner.core.data.sni.as_ref()
         }
     }
 
@@ -558,6 +587,7 @@ impl Secrets {
 }
 
 /// Keys used to communicate in a single direction
+#[allow(clippy::exhaustive_structs)]
 pub struct DirectionalKeys {
     /// Encrypts or decrypts a packet's headers
     pub header: Box<dyn HeaderProtectionKey>,
@@ -781,6 +811,7 @@ pub trait PacketKey: Send + Sync {
 }
 
 /// Packet protection keys for bidirectional 1-RTT communication
+#[allow(clippy::exhaustive_structs)]
 pub struct PacketKeySet {
     /// Encrypts outgoing packets
     pub local: Box<dyn PacketKey>,
@@ -849,6 +880,7 @@ impl<'a> KeyBuilder<'a> {
 }
 
 /// Produces QUIC initial keys from a TLS 1.3 ciphersuite and a QUIC key generation algorithm.
+#[non_exhaustive]
 #[derive(Clone, Copy)]
 pub struct Suite {
     /// The TLS 1.3 ciphersuite used to derive keys.
@@ -871,6 +903,7 @@ impl Suite {
 }
 
 /// Complete set of keys used to communicate with the peer
+#[allow(clippy::exhaustive_structs)]
 pub struct Keys {
     /// Encrypts outgoing packets
     pub local: DirectionalKeys,
@@ -927,6 +960,7 @@ impl Keys {
 /// Once the 1-RTT keys have been exchanged, either side may initiate a key update. Progressive
 /// update keys can be obtained from the [`Secrets`] returned in [`KeyChange::OneRtt`]. Note that
 /// only packet keys are updated by key updates; header protection keys remain the same.
+#[allow(clippy::exhaustive_enums)]
 pub enum KeyChange {
     /// Keys for the handshake space
     Handshake {
@@ -948,8 +982,6 @@ pub enum KeyChange {
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug)]
 pub enum Version {
-    /// Draft versions 29, 30, 31 and 32
-    V1Draft,
     /// First stable RFC
     V1,
     /// Anti-ossification variant of V1
@@ -959,11 +991,6 @@ pub enum Version {
 impl Version {
     fn initial_salt(self) -> &'static [u8; 20] {
         match self {
-            Self::V1Draft => &[
-                // https://datatracker.ietf.org/doc/html/draft-ietf-quic-tls-32#section-5.2
-                0xaf, 0xbf, 0xec, 0x28, 0x99, 0x93, 0xd2, 0x4c, 0x9e, 0x97, 0x86, 0xf1, 0x9c, 0x61,
-                0x11, 0xe0, 0x43, 0x90, 0xa8, 0x99,
-            ],
             Self::V1 => &[
                 // https://www.rfc-editor.org/rfc/rfc9001.html#name-initial-secrets
                 0x38, 0x76, 0x2c, 0xf7, 0xf5, 0x59, 0x34, 0xb3, 0x4d, 0x17, 0x9a, 0xe6, 0xa4, 0xc8,
@@ -980,7 +1007,7 @@ impl Version {
     /// Key derivation label for packet keys.
     pub(crate) fn packet_key_label(&self) -> &'static [u8] {
         match self {
-            Self::V1Draft | Self::V1 => b"quic key",
+            Self::V1 => b"quic key",
             Self::V2 => b"quicv2 key",
         }
     }
@@ -988,7 +1015,7 @@ impl Version {
     /// Key derivation label for packet "IV"s.
     pub(crate) fn packet_iv_label(&self) -> &'static [u8] {
         match self {
-            Self::V1Draft | Self::V1 => b"quic iv",
+            Self::V1 => b"quic iv",
             Self::V2 => b"quicv2 iv",
         }
     }
@@ -996,14 +1023,14 @@ impl Version {
     /// Key derivation for header keys.
     pub(crate) fn header_key_label(&self) -> &'static [u8] {
         match self {
-            Self::V1Draft | Self::V1 => b"quic hp",
+            Self::V1 => b"quic hp",
             Self::V2 => b"quicv2 hp",
         }
     }
 
     fn key_update_label(&self) -> &'static [u8] {
         match self {
-            Self::V1Draft | Self::V1 => b"quic ku",
+            Self::V1 => b"quic ku",
             Self::V2 => b"quicv2 ku",
         }
     }

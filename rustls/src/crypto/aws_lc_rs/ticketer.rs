@@ -5,8 +5,8 @@ use core::fmt::{Debug, Formatter};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use aws_lc_rs::cipher::{
-    DecryptionContext, PaddedBlockDecryptingKey, PaddedBlockEncryptingKey, UnboundCipherKey,
-    AES_256, AES_256_KEY_LEN, AES_CBC_IV_LEN,
+    AES_256, AES_256_KEY_LEN, AES_CBC_IV_LEN, DecryptionContext, PaddedBlockDecryptingKey,
+    PaddedBlockEncryptingKey, UnboundCipherKey,
 };
 use aws_lc_rs::{hmac, iv};
 
@@ -21,11 +21,17 @@ use crate::server::ProducesTickets;
 use crate::sync::Arc;
 
 /// A concrete, safe ticket creation mechanism.
+#[non_exhaustive]
 pub struct Ticketer {}
 
 impl Ticketer {
-    /// Make the recommended `Ticketer`.  This produces tickets
-    /// with a 12 hour life and randomly generated keys.
+    /// Make the recommended `Ticketer`.
+    ///
+    /// This produces tickets:
+    ///
+    /// - where each lasts for at least 6 hours,
+    /// - with randomly generated keys, and
+    /// - where keys are rotated every 6 hours.
     ///
     /// The `Ticketer` uses the [RFC 5077 §4] "Recommended Ticket Construction",
     /// using AES 256 for encryption and HMAC-SHA256 for ciphertext authentication.
@@ -34,39 +40,14 @@ impl Ticketer {
     #[cfg(feature = "std")]
     pub fn new() -> Result<Arc<dyn ProducesTickets>, Error> {
         Ok(Arc::new(crate::ticketer::TicketRotator::new(
-            6 * 60 * 60,
+            crate::ticketer::TicketRotator::SIX_HOURS,
             make_ticket_generator,
-        )?))
-    }
-
-    /// Make the recommended `Ticketer`.  This produces tickets
-    /// with a 12 hour life and randomly generated keys.
-    ///
-    /// The `Ticketer` uses the [RFC 5077 §4] "Recommended Ticket Construction",
-    /// using AES 256 for encryption and HMAC-SHA256 for ciphertext authentication.
-    ///
-    /// [RFC 5077 §4]: https://www.rfc-editor.org/rfc/rfc5077#section-4
-    #[cfg(not(feature = "std"))]
-    pub fn new<M: crate::lock::MakeMutex>(
-        time_provider: &'static dyn TimeProvider,
-    ) -> Result<Arc<dyn ProducesTickets>, Error> {
-        Ok(Arc::new(crate::ticketer::TicketSwitcher::new::<M>(
-            6 * 60 * 60,
-            make_ticket_generator,
-            time_provider,
         )?))
     }
 }
 
-fn make_ticket_generator() -> Result<Box<dyn ProducesTickets>, GetRandomFailed> {
-    // NOTE(XXX): Unconditionally mapping errors to `GetRandomFailed` here is slightly
-    //   misleading in some cases (e.g. failure to construct a padded block cipher encrypting key).
-    //   However, we can't change the return type expected from a `TicketSwitcher` `generator`
-    //   without breaking semver.
-    //   Tracking in https://github.com/rustls/rustls/issues/2074
-    Ok(Box::new(
-        Rfc5077Ticketer::new().map_err(|_| GetRandomFailed)?,
-    ))
+fn make_ticket_generator() -> Result<Box<dyn ProducesTickets>, Error> {
+    Ok(Box::new(Rfc5077Ticketer::new()?))
 }
 
 /// An RFC 5077 "Recommended Ticket Construction" implementation of a [`Ticketer`].
@@ -75,7 +56,6 @@ struct Rfc5077Ticketer {
     aes_decrypt_key: PaddedBlockDecryptingKey,
     hmac_key: hmac::Key,
     key_name: [u8; 16],
-    lifetime: u32,
     maximum_ciphertext_len: AtomicUsize,
 }
 
@@ -116,7 +96,6 @@ impl Rfc5077Ticketer {
             aes_decrypt_key,
             hmac_key,
             key_name,
-            lifetime: 60 * 60 * 12,
             maximum_ciphertext_len: AtomicUsize::new(0),
         })
     }
@@ -128,7 +107,9 @@ impl ProducesTickets for Rfc5077Ticketer {
     }
 
     fn lifetime(&self) -> u32 {
-        self.lifetime
+        // this is not used, as this ticketer is only used via a `TicketRotator`
+        // that is responsible for defining and managing the lifetime of tickets.
+        0
     }
 
     /// Encrypt `message` and return the ciphertext.
@@ -237,8 +218,7 @@ impl Debug for Rfc5077Ticketer {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         // Note: we deliberately omit keys from the debug output.
         f.debug_struct("Rfc5077Ticketer")
-            .field("lifetime", &self.lifetime)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -339,64 +319,6 @@ mod tests {
     }
 
     #[test]
-    fn ticketswitcher_switching_test() {
-        #[expect(deprecated)]
-        let t = Arc::new(crate::ticketer::TicketSwitcher::new(1, make_ticket_generator).unwrap());
-        let now = UnixTime::now();
-        let cipher1 = t.encrypt(b"ticket 1").unwrap();
-        assert_eq!(t.decrypt(&cipher1).unwrap(), b"ticket 1");
-        {
-            // Trigger new ticketer
-            t.maybe_roll(UnixTime::since_unix_epoch(Duration::from_secs(
-                now.as_secs() + 10,
-            )));
-        }
-        let cipher2 = t.encrypt(b"ticket 2").unwrap();
-        assert_eq!(t.decrypt(&cipher1).unwrap(), b"ticket 1");
-        assert_eq!(t.decrypt(&cipher2).unwrap(), b"ticket 2");
-        {
-            // Trigger new ticketer
-            t.maybe_roll(UnixTime::since_unix_epoch(Duration::from_secs(
-                now.as_secs() + 20,
-            )));
-        }
-        let cipher3 = t.encrypt(b"ticket 3").unwrap();
-        assert!(t.decrypt(&cipher1).is_none());
-        assert_eq!(t.decrypt(&cipher2).unwrap(), b"ticket 2");
-        assert_eq!(t.decrypt(&cipher3).unwrap(), b"ticket 3");
-    }
-
-    #[test]
-    fn ticketswitcher_recover_test() {
-        #[expect(deprecated)]
-        let mut t = crate::ticketer::TicketSwitcher::new(1, make_ticket_generator).unwrap();
-        let now = UnixTime::now();
-        let cipher1 = t.encrypt(b"ticket 1").unwrap();
-        assert_eq!(t.decrypt(&cipher1).unwrap(), b"ticket 1");
-        t.generator = fail_generator;
-        {
-            // Failed new ticketer
-            t.maybe_roll(UnixTime::since_unix_epoch(Duration::from_secs(
-                now.as_secs() + 10,
-            )));
-        }
-        t.generator = make_ticket_generator;
-        let cipher2 = t.encrypt(b"ticket 2").unwrap();
-        assert_eq!(t.decrypt(&cipher1).unwrap(), b"ticket 1");
-        assert_eq!(t.decrypt(&cipher2).unwrap(), b"ticket 2");
-        {
-            // recover
-            t.maybe_roll(UnixTime::since_unix_epoch(Duration::from_secs(
-                now.as_secs() + 20,
-            )));
-        }
-        let cipher3 = t.encrypt(b"ticket 3").unwrap();
-        assert!(t.decrypt(&cipher1).is_none());
-        assert_eq!(t.decrypt(&cipher2).unwrap(), b"ticket 2");
-        assert_eq!(t.decrypt(&cipher3).unwrap(), b"ticket 3");
-    }
-
-    #[test]
     fn rfc5077ticketer_is_debug_and_producestickets() {
         use alloc::format;
 
@@ -404,12 +326,12 @@ mod tests {
 
         let t = make_ticket_generator().unwrap();
 
-        assert_eq!(format!("{:?}", t), "Rfc5077Ticketer { lifetime: 43200 }");
+        assert_eq!(format!("{t:?}"), "Rfc5077Ticketer { .. }");
         assert!(t.enabled());
-        assert_eq!(t.lifetime(), 43200);
+        assert_eq!(t.lifetime(), 0);
     }
 
-    fn fail_generator() -> Result<Box<dyn ProducesTickets>, GetRandomFailed> {
-        Err(GetRandomFailed)
+    fn fail_generator() -> Result<Box<dyn ProducesTickets>, Error> {
+        Err(Error::FailedToGetRandomBytes)
     }
 }

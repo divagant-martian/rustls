@@ -10,6 +10,7 @@ use crate::{DistinguishedName, Error};
 
 /// A container for root certificates able to provide a root-of-trust
 /// for connection authentication.
+#[allow(clippy::exhaustive_structs)]
 #[derive(Clone)]
 pub struct RootCertStore {
     /// The list of roots.
@@ -37,7 +38,7 @@ impl RootCertStore {
         let mut invalid_count = 0;
 
         for der_cert in der_certs {
-            #[cfg_attr(not(feature = "logging"), allow(unused_variables))]
+            #[cfg_attr(not(feature = "log"), allow(unused_variables))]
             match anchor_from_trusted_cert(&der_cert) {
                 Ok(anchor) => {
                     self.roots.push(anchor.to_owned());
@@ -45,15 +46,14 @@ impl RootCertStore {
                 }
                 Err(err) => {
                     trace!("invalid cert der {:?}", der_cert.as_ref());
-                    debug!("certificate parsing failed: {:?}", err);
+                    debug!("certificate parsing failed: {err:?}");
                     invalid_count += 1;
                 }
             };
         }
 
         debug!(
-            "add_parsable_certificates processed {} valid and {} invalid certs",
-            valid_count, invalid_count
+            "add_parsable_certificates processed {valid_count} valid and {invalid_count} invalid certs"
         );
 
         (valid_count, invalid_count)
@@ -138,7 +138,7 @@ fn root_cert_store_debug() {
     let store = RootCertStore::from_iter(iter::repeat(ta).take(138));
 
     assert_eq!(
-        format!("{:?}", store),
+        format!("{store:?}"),
         "RootCertStore { roots: \"(138 roots)\" }"
     );
 }

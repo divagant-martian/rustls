@@ -10,6 +10,8 @@ use std::io;
 use pki_types::{DnsName, UnixTime};
 
 use super::hs;
+#[cfg(feature = "std")]
+use crate::WantsVerifier;
 use crate::builder::ConfigBuilder;
 use crate::common_state::{CommonState, Side};
 #[cfg(feature = "std")]
@@ -18,21 +20,22 @@ use crate::conn::{ConnectionCommon, ConnectionCore, UnbufferedConnectionCommon};
 #[cfg(doc)]
 use crate::crypto;
 use crate::crypto::CryptoProvider;
-use crate::enums::{CipherSuite, ProtocolVersion, SignatureScheme};
+use crate::enums::{CertificateType, CipherSuite, ProtocolVersion, SignatureScheme};
 use crate::error::Error;
+use crate::kernel::KernelConnection;
 use crate::log::trace;
 use crate::msgs::base::Payload;
-use crate::msgs::enums::CertificateType;
-use crate::msgs::handshake::{ClientHelloPayload, ProtocolName, ServerExtension};
+use crate::msgs::handshake::{ClientHelloPayload, ProtocolName, ServerExtensionsInput};
 use crate::msgs::message::Message;
+use crate::suites::ExtractedSecrets;
 use crate::sync::Arc;
 #[cfg(feature = "std")]
 use crate::time_provider::DefaultTimeProvider;
 use crate::time_provider::TimeProvider;
 use crate::vecbuf::ChunkVecBuffer;
-#[cfg(feature = "std")]
-use crate::WantsVerifier;
-use crate::{compress, sign, verify, versions, DistinguishedName, KeyLog, WantsVersions};
+use crate::{
+    DistinguishedName, KeyLog, NamedGroup, WantsVersions, compress, sign, verify, versions,
+};
 
 /// A trait for the ability to store server session data.
 ///
@@ -123,7 +126,7 @@ pub trait ResolvesServerCert: Debug + Send + Sync {
     /// ClientHello information.
     ///
     /// Return `None` to abort the handshake.
-    fn resolve(&self, client_hello: ClientHello<'_>) -> Option<Arc<sign::CertifiedKey>>;
+    fn resolve(&self, client_hello: &ClientHello<'_>) -> Option<Arc<sign::CertifiedKey>>;
 
     /// Return true when the server only supports raw public keys.
     fn only_raw_public_keys(&self) -> bool {
@@ -144,16 +147,15 @@ pub struct ClientHello<'a> {
     ///
     /// [certificate_authorities]: https://datatracker.ietf.org/doc/html/rfc8446#section-4.2.4
     pub(super) certificate_authorities: Option<&'a [DistinguishedName]>,
+    pub(super) named_groups: Option<&'a [NamedGroup]>,
 }
 
 impl<'a> ClientHello<'a> {
     /// Get the server name indicator.
     ///
     /// Returns `None` if the client did not supply a SNI.
-    pub fn server_name(&self) -> Option<&str> {
-        self.server_name
-            .as_ref()
-            .map(<DnsName<'_> as AsRef<str>>::as_ref)
+    pub fn server_name(&self) -> Option<&DnsName<'_>> {
+        self.server_name.as_ref()
     }
 
     /// Get the compatible signature schemes.
@@ -215,6 +217,27 @@ impl<'a> ClientHello<'a> {
     pub fn certificate_authorities(&self) -> Option<&'a [DistinguishedName]> {
         self.certificate_authorities
     }
+
+    /// Get the [`named_groups`] extension sent by the client.
+    ///
+    /// This means different things in different versions of TLS:
+    ///
+    /// Originally it was introduced as the "[`elliptic_curves`]" extension for TLS1.2.
+    /// It described the elliptic curves supported by a client for all purposes: key
+    /// exchange, signature verification (for server authentication), and signing (for
+    /// client auth).  Later [RFC7919] extended this to include FFDHE "named groups",
+    /// but FFDHE groups in this context only relate to key exchange.
+    ///
+    /// In TLS1.3 it was renamed to "[`named_groups`]" and now describes all types
+    /// of key exchange mechanisms, and does not relate at all to elliptic curves
+    /// used for signatures.
+    ///
+    /// [`elliptic_curves`]: https://datatracker.ietf.org/doc/html/rfc4492#section-5.1.1
+    /// [RFC7919]: https://datatracker.ietf.org/doc/html/rfc7919#section-2
+    /// [`named_groups`]:https://datatracker.ietf.org/doc/html/rfc8446#section-4.2.7
+    pub fn named_groups(&self) -> Option<&'a [NamedGroup]> {
+        self.named_groups
+    }
 }
 
 /// Common configuration for a set of server sessions.
@@ -240,6 +263,31 @@ impl<'a> ClientHello<'a> {
 /// * [`ServerConfig::cert_compressors`]: depends on the crate features, see [`compress::default_cert_compressors()`].
 /// * [`ServerConfig::cert_compression_cache`]: caches the most recently used 4 compressions
 /// * [`ServerConfig::cert_decompressors`]: depends on the crate features, see [`compress::default_cert_decompressors()`].
+///
+/// # Sharing resumption storage between `ServerConfig`s
+///
+/// In a program using many `ServerConfig`s it may improve resumption rates
+/// (which has a significant impact on connection performance) if those
+/// configs share [`ServerConfig::session_storage`] or [`ServerConfig::ticketer`].
+///
+/// However, caution is needed: other fields influence the security of a session
+/// and resumption between them can be surprising.  If sharing
+/// [`ServerConfig::session_storage`] or [`ServerConfig::ticketer`] between two
+/// `ServerConfig`s, you should also evaluate the following fields and ensure
+/// they are equivalent:
+///
+/// * `ServerConfig::verifier` -- client authentication requirements,
+/// * [`ServerConfig::cert_resolver`] -- server identities.
+///
+/// To illustrate, imagine two `ServerConfig`s `A` and `B`.  `A` requires
+/// client authentication, `B` does not.  If `A` and `B` shared a resumption store,
+/// it would be possible for a session originated by `B` (that is, an unauthenticated client)
+/// to be inserted into the store, and then resumed by `A`.  This would give a false
+/// impression to the user of `A` that the client was authenticated.  This is possible
+/// whether the resumption is performed statefully (via [`ServerConfig::session_storage`])
+/// or statelessly (via [`ServerConfig::ticketer`]).
+///
+/// _Unlike_ `ClientConfig`, rustls does not enforce any policy here.
 ///
 /// [`RootCertStore`]: crate::RootCertStore
 /// [`ServerSessionMemoryCache`]: crate::server::handy::ServerSessionMemoryCache
@@ -267,9 +315,15 @@ pub struct ServerConfig {
     pub max_fragment_size: Option<usize>,
 
     /// How to store client sessions.
+    ///
+    /// See [ServerConfig#sharing-resumption-storage-between-serverconfigs]
+    /// for a warning related to this field.
     pub session_storage: Arc<dyn StoresServerSessions>,
 
     /// How to produce tickets.
+    ///
+    /// See [ServerConfig#sharing-resumption-storage-between-serverconfigs]
+    /// for a warning related to this field.
     pub ticketer: Arc<dyn ProducesTickets>,
 
     /// How to choose a server cert and key. This is usually set by
@@ -354,7 +408,6 @@ pub struct ServerConfig {
     ///
     /// [RFC 7627]: https://datatracker.ietf.org/doc/html/rfc7627
     /// [FIPS 140-3 IG.pdf]: https://csrc.nist.gov/csrc/media/Projects/cryptographic-module-validation-program/documents/fips%20140-3/FIPS%20140-3%20IG.pdf
-    #[cfg(feature = "tls12")]
     pub require_ems: bool,
 
     /// Provides the current system time
@@ -422,9 +475,9 @@ impl ServerConfig {
         // Safety assumptions:
         // 1. that the provider has been installed (explicitly or implicitly)
         // 2. that the process-level default provider is usable with the supplied protocol versions.
-        Self::builder_with_provider(Arc::clone(
-            CryptoProvider::get_default_or_install_from_crate_features(),
-        ))
+        Self::builder_with_provider(
+            CryptoProvider::get_default_or_install_from_crate_features().clone(),
+        )
         .with_protocol_versions(versions)
         .unwrap()
     }
@@ -482,15 +535,7 @@ impl ServerConfig {
     /// is concerned only with cryptography, whereas this _also_ covers TLS-level
     /// configuration that NIST recommends.
     pub fn fips(&self) -> bool {
-        #[cfg(feature = "tls12")]
-        {
-            self.provider.fips() && self.require_ems
-        }
-
-        #[cfg(not(feature = "tls12"))]
-        {
-            self.provider.fips()
-        }
+        self.provider.fips() && self.require_ems
     }
 
     /// Return the crypto provider used to construct this client configuration.
@@ -507,7 +552,7 @@ impl ServerConfig {
                 .provider
                 .cipher_suites
                 .iter()
-                .any(|cs| cs.version().version == v)
+                .any(|cs| cs.version().version() == v)
     }
 
     #[cfg(feature = "std")]
@@ -528,13 +573,17 @@ impl ServerConfig {
 #[cfg(feature = "std")]
 mod connection {
     use alloc::boxed::Box;
-    use alloc::vec::Vec;
     use core::fmt;
     use core::fmt::{Debug, Formatter};
     use core::ops::{Deref, DerefMut};
     use std::io;
 
-    use super::{Accepted, Accepting, EarlyDataState, ServerConfig, ServerConnectionData};
+    use pki_types::DnsName;
+
+    use super::{
+        Accepted, Accepting, EarlyDataState, ServerConfig, ServerConnectionData,
+        ServerExtensionsInput,
+    };
     use crate::common_state::{CommonState, Context, Side};
     use crate::conn::{ConnectionCommon, ConnectionCore};
     use crate::error::Error;
@@ -547,7 +596,7 @@ mod connection {
     ///
     /// "Early data" is also known as "0-RTT data".
     ///
-    /// This structure implements [`std::io::Read`].
+    /// This type implements [`io::Read`].
     pub struct ReadEarlyData<'a> {
         early_data: &'a mut EarlyDataState,
     }
@@ -561,11 +610,6 @@ mod connection {
     impl io::Read for ReadEarlyData<'_> {
         fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
             self.early_data.read(buf)
-        }
-
-        #[cfg(read_buf)]
-        fn read_buf(&mut self, cursor: core::io::BorrowedCursor<'_>) -> io::Result<()> {
-            self.early_data.read_buf(cursor)
         }
     }
 
@@ -582,7 +626,10 @@ mod connection {
         /// we behave in the TLS protocol.
         pub fn new(config: Arc<ServerConfig>) -> Result<Self, Error> {
             Ok(Self {
-                inner: ConnectionCommon::from(ConnectionCore::for_server(config, Vec::new())?),
+                inner: ConnectionCommon::from(ConnectionCore::for_server(
+                    config,
+                    ServerExtensionsInput::default(),
+                )?),
             })
         }
 
@@ -601,8 +648,8 @@ mod connection {
         /// when the client provides the SNI extension.
         ///
         /// The server name is also used to match sessions during session resumption.
-        pub fn server_name(&self) -> Option<&str> {
-            self.inner.core.get_sni_str()
+        pub fn server_name(&self) -> Option<&DnsName<'_>> {
+            self.inner.core.data.sni.as_ref()
         }
 
         /// Application-controlled portion of the resumption ticket supplied by the client, if any.
@@ -718,7 +765,7 @@ mod connection {
     /// # Example
     ///
     /// ```no_run
-    /// # #[cfg(feature = "aws_lc_rs")] {
+    /// # #[cfg(feature = "aws-lc-rs")] {
     /// # fn choose_server_config(
     /// #     _: rustls::server::ClientHello,
     /// # ) -> std::sync::Arc<rustls::ServerConfig> {
@@ -779,8 +826,7 @@ mod connection {
         pub fn read_tls(&mut self, rd: &mut dyn io::Read) -> Result<usize, io::Error> {
             match &mut self.inner {
                 Some(conn) => conn.read_tls(rd),
-                None => Err(io::Error::new(
-                    io::ErrorKind::Other,
+                None => Err(io::Error::other(
                     "acceptor cannot read after successful acceptance",
                 )),
             }
@@ -887,9 +933,34 @@ impl UnbufferedServerConnection {
         Ok(Self {
             inner: UnbufferedConnectionCommon::from(ConnectionCore::for_server(
                 config,
-                Vec::new(),
+                ServerExtensionsInput::default(),
             )?),
         })
+    }
+
+    /// Extract secrets, so they can be used when configuring kTLS, for example.
+    /// Should be used with care as it exposes secret key material.
+    #[deprecated = "dangerous_extract_secrets() does not support session tickets or \
+                    key updates, use dangerous_into_kernel_connection() instead"]
+    pub fn dangerous_extract_secrets(self) -> Result<ExtractedSecrets, Error> {
+        self.inner.dangerous_extract_secrets()
+    }
+
+    /// Extract secrets and an [`KernelConnection`] object.
+    ///
+    /// This allows you use rustls to manage keys and then manage encryption and
+    /// decryption yourself (e.g. for kTLS).
+    ///
+    /// Should be used with care as it exposes secret key material.
+    ///
+    /// See the [`crate::kernel`] documentations for details on prerequisites
+    /// for calling this method.
+    pub fn dangerous_into_kernel_connection(
+        self,
+    ) -> Result<(ExtractedSecrets, KernelConnection<ServerConnectionData>), Error> {
+        self.inner
+            .core
+            .dangerous_into_kernel_connection()
     }
 }
 
@@ -911,6 +982,10 @@ impl UnbufferedConnectionCommon<ServerConnectionData> {
     pub(crate) fn pop_early_data(&mut self) -> Option<Vec<u8>> {
         self.core.data.early_data.pop()
     }
+
+    pub(crate) fn peek_early_data(&self) -> Option<&[u8]> {
+        self.core.data.early_data.peek()
+    }
 }
 
 /// Represents a `ClientHello` message received through the [`Acceptor`].
@@ -929,11 +1004,18 @@ impl Accepted {
         let ch = ClientHello {
             server_name: &self.connection.core.data.sni,
             signature_schemes: &self.sig_schemes,
-            alpn: payload.alpn_extension(),
-            server_cert_types: payload.server_certificate_extension(),
-            client_cert_types: payload.client_certificate_extension(),
+            alpn: payload.protocols.as_ref(),
+            server_cert_types: payload
+                .server_certificate_types
+                .as_deref(),
+            client_cert_types: payload
+                .client_certificate_types
+                .as_deref(),
             cipher_suites: &payload.cipher_suites,
-            certificate_authorities: payload.certificate_authorities_extension(),
+            certificate_authorities: payload
+                .certificate_authority_names
+                .as_deref(),
+            named_groups: payload.named_groups.as_deref(),
         };
 
         trace!("Accepted::client_hello(): {ch:#?}");
@@ -961,7 +1043,7 @@ impl Accepted {
 
         self.connection.enable_secret_extraction = config.enable_secret_extraction;
 
-        let state = hs::ExpectClientHello::new(config, Vec::new());
+        let state = hs::ExpectClientHello::new(config, ServerExtensionsInput::default());
         let mut cx = hs::ServerContext::from(&mut self.connection);
 
         let ch = Self::client_hello_payload(&self.message);
@@ -978,8 +1060,7 @@ impl Accepted {
 
     fn client_hello_payload<'a>(message: &'a Message<'_>) -> &'a ClientHelloPayload {
         match &message.payload {
-            crate::msgs::message::MessagePayload::Handshake { parsed, .. } => match &parsed.payload
-            {
+            crate::msgs::message::MessagePayload::Handshake { parsed, .. } => match &parsed.0 {
                 crate::msgs::handshake::HandshakePayload::ClientHello(ch) => ch,
                 _ => unreachable!(),
             },
@@ -1051,11 +1132,16 @@ impl EarlyDataState {
         matches!(self, Self::Rejected)
     }
 
+    fn peek(&self) -> Option<&[u8]> {
+        match self {
+            Self::Accepted { received, .. } => received.peek(),
+            _ => None,
+        }
+    }
+
     fn pop(&mut self) -> Option<Vec<u8>> {
         match self {
-            Self::Accepted {
-                ref mut received, ..
-            } => received.pop(),
+            Self::Accepted { received, .. } => received.pop(),
             _ => None,
         }
     }
@@ -1063,36 +1149,24 @@ impl EarlyDataState {
     #[cfg(feature = "std")]
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         match self {
-            Self::Accepted {
-                ref mut received, ..
-            } => received.read(buf),
-            _ => Err(io::Error::from(io::ErrorKind::BrokenPipe)),
-        }
-    }
-
-    #[cfg(read_buf)]
-    fn read_buf(&mut self, cursor: core::io::BorrowedCursor<'_>) -> io::Result<()> {
-        match self {
-            Self::Accepted {
-                ref mut received, ..
-            } => received.read_buf(cursor),
+            Self::Accepted { received, .. } => received.read(buf),
             _ => Err(io::Error::from(io::ErrorKind::BrokenPipe)),
         }
     }
 
     pub(super) fn take_received_plaintext(&mut self, bytes: Payload<'_>) -> bool {
         let available = bytes.bytes().len();
-        match self {
-            Self::Accepted {
-                ref mut received,
-                ref mut left,
-            } if received.apply_limit(available) == available && available <= *left => {
-                received.append(bytes.into_vec());
-                *left -= available;
-                true
-            }
-            _ => false,
+        let Self::Accepted { received, left } = self else {
+            return false;
+        };
+
+        if received.apply_limit(available) != available || available > *left {
+            return false;
         }
+
+        received.append(bytes.into_vec());
+        *left -= available;
+        true
     }
 }
 
@@ -1114,7 +1188,7 @@ impl Debug for EarlyDataState {
 impl ConnectionCore<ServerConnectionData> {
     pub(crate) fn for_server(
         config: Arc<ServerConfig>,
-        extra_exts: Vec<ServerExtension>,
+        extra_exts: ServerExtensionsInput<'static>,
     ) -> Result<Self, Error> {
         let mut common = CommonState::new(Side::Server);
         common.set_max_fragment_size(config.max_fragment_size)?;
@@ -1135,27 +1209,15 @@ impl ConnectionCore<ServerConnectionData> {
         );
         self.data.early_data.reject();
     }
-
-    #[cfg(feature = "std")]
-    pub(crate) fn get_sni_str(&self) -> Option<&str> {
-        self.data.get_sni_str()
-    }
 }
 
 /// State associated with a server connection.
 #[derive(Default, Debug)]
 pub struct ServerConnectionData {
-    pub(super) sni: Option<DnsName<'static>>,
+    pub(crate) sni: Option<DnsName<'static>>,
     pub(super) received_resumption_data: Option<Vec<u8>>,
     pub(super) resumption_data: Vec<u8>,
     pub(super) early_data: EarlyDataState,
-}
-
-impl ServerConnectionData {
-    #[cfg(feature = "std")]
-    pub(super) fn get_sni_str(&self) -> Option<&str> {
-        self.sni.as_ref().map(AsRef::as_ref)
-    }
 }
 
 impl crate::conn::SideData for ServerConnectionData {}
@@ -1172,19 +1234,6 @@ mod tests {
     fn test_read_in_new_state() {
         assert_eq!(
             format!("{:?}", EarlyDataState::default().read(&mut [0u8; 5])),
-            "Err(Kind(BrokenPipe))"
-        );
-    }
-
-    #[cfg(read_buf)]
-    #[test]
-    fn test_read_buf_in_new_state() {
-        use core::io::BorrowedBuf;
-
-        let mut buf = [0u8; 5];
-        let mut buf: BorrowedBuf<'_> = buf.as_mut_slice().into();
-        assert_eq!(
-            format!("{:?}", EarlyDataState::default().read_buf(buf.unfilled())),
             "Err(Kind(BrokenPipe))"
         );
     }

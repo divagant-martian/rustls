@@ -2,6 +2,7 @@ use pki_types::PrivateKeyDer;
 pub(crate) use ring as ring_like;
 use webpki::ring as webpki_algs;
 
+use crate::Error;
 use crate::crypto::{CryptoProvider, KeyProvider, SecureRandom, SupportedKxGroup};
 use crate::enums::SignatureScheme;
 use crate::rand::GetRandomFailed;
@@ -9,19 +10,16 @@ use crate::sign::SigningKey;
 use crate::suites::SupportedCipherSuite;
 use crate::sync::Arc;
 use crate::webpki::WebPkiSupportedAlgorithms;
-use crate::Error;
 
 /// Using software keys for authentication.
 pub mod sign;
 
 pub(crate) mod hash;
-#[cfg(any(test, feature = "tls12"))]
 pub(crate) mod hmac;
 pub(crate) mod kx;
 pub(crate) mod quic;
-#[cfg(any(feature = "std", feature = "hashbrown"))]
+#[cfg(feature = "std")]
 pub(crate) mod ticketer;
-#[cfg(feature = "tls12")]
 pub(crate) mod tls12;
 pub(crate) mod tls13;
 
@@ -74,23 +72,16 @@ pub static ALL_CIPHER_SUITES: &[SupportedCipherSuite] = &[
     tls13::TLS13_AES_128_GCM_SHA256,
     tls13::TLS13_CHACHA20_POLY1305_SHA256,
     // TLS1.2 suites
-    #[cfg(feature = "tls12")]
     tls12::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
-    #[cfg(feature = "tls12")]
     tls12::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-    #[cfg(feature = "tls12")]
     tls12::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
-    #[cfg(feature = "tls12")]
     tls12::TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-    #[cfg(feature = "tls12")]
     tls12::TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-    #[cfg(feature = "tls12")]
     tls12::TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
 ];
 
 /// All defined cipher suites supported by *ring* appear in this module.
 pub mod cipher_suite {
-    #[cfg(feature = "tls12")]
     pub use super::tls12::{
         TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256, TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
         TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256, TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
@@ -116,7 +107,9 @@ static SUPPORTED_SIG_ALGS: WebPkiSupportedAlgorithms = WebPkiSupportedAlgorithms
         webpki_algs::RSA_PKCS1_2048_8192_SHA256,
         webpki_algs::RSA_PKCS1_2048_8192_SHA384,
         webpki_algs::RSA_PKCS1_2048_8192_SHA512,
-        webpki_algs::RSA_PKCS1_3072_8192_SHA384,
+        webpki_algs::RSA_PKCS1_2048_8192_SHA256_ABSENT_PARAMS,
+        webpki_algs::RSA_PKCS1_2048_8192_SHA384_ABSENT_PARAMS,
+        webpki_algs::RSA_PKCS1_2048_8192_SHA512_ABSENT_PARAMS,
     ],
     mapping: &[
         // Note: for TLS1.2 the curve is not fixed by SignatureScheme. For TLS1.3 it is.
@@ -177,7 +170,7 @@ pub static DEFAULT_KX_GROUPS: &[&dyn SupportedKxGroup] = ALL_KX_GROUPS;
 pub static ALL_KX_GROUPS: &[&dyn SupportedKxGroup] =
     &[kx_group::X25519, kx_group::SECP256R1, kx_group::SECP384R1];
 
-#[cfg(any(feature = "std", feature = "hashbrown"))]
+#[cfg(feature = "std")]
 pub use ticketer::Ticketer;
 
 /// Compatibility shims between ring 0.16.x and 0.17.x API

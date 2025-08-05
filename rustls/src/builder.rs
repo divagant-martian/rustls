@@ -30,7 +30,7 @@ use crate::{ClientConfig, ServerConfig};
 /// supported protocol versions.
 ///
 /// ```
-/// # #[cfg(feature = "aws_lc_rs")] {
+/// # #[cfg(feature = "aws-lc-rs")] {
 /// # rustls::crypto::aws_lc_rs::default_provider().install_default();
 /// use rustls::{ClientConfig, ServerConfig};
 /// ClientConfig::builder()
@@ -46,7 +46,7 @@ use crate::{ClientConfig, ServerConfig};
 /// You may also override the choice of protocol versions:
 ///
 /// ```no_run
-/// # #[cfg(feature = "aws_lc_rs")] {
+/// # #[cfg(feature = "aws-lc-rs")] {
 /// # rustls::crypto::aws_lc_rs::default_provider().install_default();
 /// # use rustls::ServerConfig;
 /// ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
@@ -82,7 +82,7 @@ use crate::{ClientConfig, ServerConfig};
 /// For example:
 ///
 /// ```
-/// # #[cfg(feature = "aws_lc_rs")] {
+/// # #[cfg(feature = "aws-lc-rs")] {
 /// # rustls::crypto::aws_lc_rs::default_provider().install_default();
 /// # use rustls::ClientConfig;
 /// # let root_certs = rustls::RootCertStore::empty();
@@ -106,7 +106,7 @@ use crate::{ClientConfig, ServerConfig};
 /// For example:
 ///
 /// ```no_run
-/// # #[cfg(feature = "aws_lc_rs")] {
+/// # #[cfg(feature = "aws-lc-rs")] {
 /// # rustls::crypto::aws_lc_rs::default_provider().install_default();
 /// # use rustls::ServerConfig;
 /// # let certs = vec![];
@@ -183,7 +183,7 @@ impl<Side: ConfigSide, State: fmt::Debug> fmt::Debug for ConfigBuilder<Side, Sta
             .unwrap_or((side_name, ""));
         let (_, name) = ty.rsplit_once("::").unwrap_or(("", ty));
 
-        f.debug_struct(&format!("ConfigBuilder<{}, _>", name,))
+        f.debug_struct(&format!("ConfigBuilder<{name}, _>",))
             .field("state", &self.state)
             .finish()
     }
@@ -192,6 +192,7 @@ impl<Side: ConfigSide, State: fmt::Debug> fmt::Debug for ConfigBuilder<Side, Sta
 /// Config builder state where the caller must supply TLS protocol versions.
 ///
 /// For more information, see the [`ConfigBuilder`] documentation.
+#[non_exhaustive]
 #[derive(Clone, Debug)]
 pub struct WantsVersions {}
 
@@ -210,7 +211,7 @@ impl<S: ConfigSide> ConfigBuilder<S, WantsVersions> {
     ) -> Result<ConfigBuilder<S, WantsVerifier>, Error> {
         let mut any_usable_suite = false;
         for suite in &self.provider.cipher_suites {
-            if versions.contains(&suite.version()) {
+            if versions.contains(&&suite.version()) {
                 any_usable_suite = true;
                 break;
             }
@@ -278,13 +279,10 @@ pub struct WantsVerifier {
 ///
 /// [`ClientConfig`]: crate::ClientConfig
 /// [`ServerConfig`]: crate::ServerConfig
-pub trait ConfigSide: sealed::Sealed {}
+pub trait ConfigSide: crate::sealed::Sealed {}
 
 impl ConfigSide for crate::ClientConfig {}
 impl ConfigSide for crate::ServerConfig {}
 
-mod sealed {
-    pub trait Sealed {}
-    impl Sealed for crate::ClientConfig {}
-    impl Sealed for crate::ServerConfig {}
-}
+impl crate::sealed::Sealed for crate::ClientConfig {}
+impl crate::sealed::Sealed for crate::ServerConfig {}

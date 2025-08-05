@@ -44,22 +44,23 @@ fn converse(
     incoming_tls: &mut [u8],
     outgoing_tls: &mut Vec<u8>,
 ) -> Result<(), Box<dyn Error>> {
-    let mut conn = UnbufferedClientConnection::new(Arc::clone(config), SERVER_NAME.try_into()?)?;
+    let mut conn = UnbufferedClientConnection::new(config.clone(), SERVER_NAME.try_into()?)?;
     let mut sock = TcpStream::connect(format!("{SERVER_NAME}:{PORT}"))?;
 
     let mut incoming_used = 0;
     let mut outgoing_used = 0;
 
     let mut we_closed = false;
-    let mut peer_closed = false;
+    let mut fully_closed = false;
     let mut sent_request = false;
     let mut received_response = false;
     let mut sent_early_data = false;
 
     let mut iter_count = 0;
-    while !(peer_closed || (we_closed && incoming_used == 0)) {
-        let UnbufferedStatus { mut discard, state } =
-            conn.process_tls_records(&mut incoming_tls[..incoming_used]);
+    while !fully_closed {
+        let UnbufferedStatus {
+            mut discard, state, ..
+        } = conn.process_tls_records(&mut incoming_tls[..incoming_used]);
 
         match dbg!(state.unwrap()) {
             ConnectionState::ReadTraffic(mut state) => {
@@ -67,6 +68,7 @@ fn converse(
                     let AppDataRecord {
                         discard: new_discard,
                         payload,
+                        ..
                     } = res?;
                     discard += new_discard;
 
@@ -168,8 +170,10 @@ fn converse(
                 }
             }
 
+            ConnectionState::PeerClosed => {}
+
             ConnectionState::Closed => {
-                peer_closed = true;
+                fully_closed = true;
             }
 
             // other states are not expected in this example
@@ -214,7 +218,7 @@ where
         Ok(written) => written,
 
         Err(e) => {
-            let InsufficientSizeError { required_size } = map_err(e)?;
+            let InsufficientSizeError { required_size, .. } = map_err(e)?;
             let new_len = *outgoing_used + required_size;
             outgoing_tls.resize(new_len, 0);
             eprintln!("resized `outgoing_tls` buffer to {new_len}B");

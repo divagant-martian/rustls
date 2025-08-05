@@ -1,6 +1,6 @@
 use base64::prelude::*;
 use rustls::ffdhe_groups::FfdheGroup;
-use rustls::{ffdhe_groups, NamedGroup};
+use rustls::{NamedGroup, ffdhe_groups};
 
 use crate::utils::verify_openssl3_available;
 
@@ -25,13 +25,7 @@ fn ffdhe_params_correct() {
 fn test_ffdhe_params_correct(name: NamedGroup, group: FfdheGroup<'static>) {
     let (p, g) = get_ffdhe_params_from_openssl(name);
     let openssl_params = FfdheGroup::from_params_trimming_leading_zeros(&p, &g);
-    #[allow(deprecated)]
-    let rustls_params_from_name = FfdheGroup::from_named_group(name).unwrap();
-    #[allow(deprecated)]
-    let round_trip_name = rustls_params_from_name.named_group();
-    assert_eq!(round_trip_name, Some(name));
 
-    assert_eq!(rustls_params_from_name, openssl_params);
     assert_eq!(group, openssl_params);
 }
 
@@ -64,7 +58,7 @@ fn get_ffdhe_params_from_openssl(ffdhe_group: NamedGroup) -> (Vec<u8>, Vec<u8>) 
 
 /// Parse PEM-encoded DH parameters, returning `(p, g)`
 fn parse_dh_params_pem(data: &[u8]) -> (Vec<u8>, Vec<u8>) {
-    let output_str = std::str::from_utf8(data).unwrap();
+    let output_str = str::from_utf8(data).unwrap();
     let output_str_lines = output_str.lines().collect::<Vec<_>>();
     assert_eq!(output_str_lines[0], "-----BEGIN DH PARAMETERS-----");
 
@@ -86,10 +80,10 @@ fn parse_dh_params_pem(data: &[u8]) -> (Vec<u8>, Vec<u8>) {
         .unwrap();
 
     let res: asn1::ParseResult<_> = asn1::parse(&base64_decoded, |d| {
-        d.read_element::<asn1::Sequence>()?
+        d.read_element::<asn1::Sequence<'_>>()?
             .parse(|d| {
-                let p = d.read_element::<asn1::BigUint>()?;
-                let g = d.read_element::<asn1::BigUint>()?;
+                let p = d.read_element::<asn1::BigUint<'_>>()?;
+                let g = d.read_element::<asn1::BigUint<'_>>()?;
                 Ok((p, g))
             })
     });

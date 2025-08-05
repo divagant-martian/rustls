@@ -9,8 +9,12 @@
 //!
 //! ### Platform support
 //!
-//! While Rustls itself is platform independent, by default it uses [`aws-lc-rs`] for implementing
-//! the cryptography in TLS.  See [the aws-lc-rs FAQ][aws-lc-rs-platforms-faq] for more details of the
+//! While Rustls itself is platform independent, it requires the use of cryptography primitives
+//! for implementing the cryptography algorithms used in TLS. In Rustls, a
+//! [`crypto::CryptoProvider`] represents a collection of crypto primitive implementations.
+//!
+//! The Rustls team recommends using the [`aws-lc-rs`] crate, which for its complete feature set
+//! and performance. See [the aws-lc-rs FAQ][aws-lc-rs-platforms-faq] for more details of the
 //! platform/architecture support constraints in aws-lc-rs.
 //!
 //! [`ring`] is also available via the `ring` crate feature: see
@@ -21,10 +25,7 @@
 //! to a wider set of architectures and environments, or compliance requirements.  See the
 //! [`crypto::CryptoProvider`] documentation for more details.
 //!
-//! Specifying `default-features = false` when depending on rustls will remove the
-//! dependency on aws-lc-rs.
-//!
-//! Rustls requires Rust 1.63 or later. It has an optional dependency on zlib-rs which requires 1.75 or later.
+//! Rustls requires Rust 1.79 or later.
 //!
 //! [ring-target-platforms]: https://github.com/briansmith/ring/blob/2e8363b433fa3b3962c877d9ed2e9145612f3160/include/ring-core/target.h#L18-L64
 //! [`crypto::CryptoProvider`]: crate::crypto::CryptoProvider
@@ -36,7 +37,7 @@
 //!
 //! Since Rustls 0.22 it has been possible to choose the provider of the cryptographic primitives
 //! that Rustls uses. This may be appealing if you have specific platform, compliance or feature
-//! requirements that aren't met by the default provider, [`aws-lc-rs`].
+//! requirements.
 //!
 //! Users that wish to customize the provider in use can do so when constructing `ClientConfig`
 //! and `ServerConfig` instances using the `with_crypto_provider` method on the respective config
@@ -44,10 +45,10 @@
 //!
 //! #### Built-in providers
 //!
-//! Rustls ships with two built-in providers controlled with associated feature flags:
+//! Rustls ships with two built-in providers controlled by associated crate features:
 //!
-//!   * [`aws-lc-rs`] - enabled by default, available with the `aws_lc_rs` feature flag enabled.
-//!   * [`ring`] - available with the `ring` feature flag enabled.
+//!   * [`aws-lc-rs`] - available with the `aws-lc-rs` crate feature enabled
+//!   * [`ring`] - available with the `ring` crate feature enabled
 //!
 //! See the documentation for [`crypto::CryptoProvider`] for details on how providers are
 //! selected.
@@ -56,17 +57,18 @@
 //!
 //! The community has also started developing third-party providers for Rustls:
 //!
-//!   * [`rustls-mbedtls-provider`] - a provider that uses [`mbedtls`] for cryptography.
-//!   * [`rustls-openssl`] - a provider that uses [OpenSSL] for cryptography.
-//!   * [`rustls-post-quantum`]: an experimental provider that adds support for post-quantum
-//!     key exchange to the default aws-lc-rs provider.
 //!   * [`boring-rustls-provider`] - a work-in-progress provider that uses [`boringssl`] for
 //!     cryptography.
+//!   * [`rustls-graviola`] - a provider that uses [`graviola`] for cryptography.
+//!   * [`rustls-mbedtls-provider`] - a provider that uses [`mbedtls`] for cryptography.
+//!   * [`rustls-openssl`] - a provider that uses [OpenSSL] for cryptography.
 //!   * [`rustls-rustcrypto`] - an experimental provider that uses the crypto primitives
 //!     from [`RustCrypto`] for cryptography.
 //!   * [`rustls-symcrypt`] - a provider that uses Microsoft's [SymCrypt] library.
 //!   * [`rustls-wolfcrypt-provider`] - a work-in-progress provider that uses [`wolfCrypt`] for cryptography.
 //!
+//! [`rustls-graviola`]: https://crates.io/crates/rustls-graviola
+//! [`graviola`]: https://github.com/ctz/graviola
 //! [`rustls-mbedtls-provider`]: https://github.com/fortanix/rustls-mbedtls-provider
 //! [`mbedtls`]: https://github.com/Mbed-TLS/mbedtls
 //! [`rustls-openssl`]: https://github.com/tofay/rustls-openssl
@@ -77,20 +79,18 @@
 //! [`boringssl`]: https://github.com/google/boringssl
 //! [`rustls-rustcrypto`]: https://github.com/RustCrypto/rustls-rustcrypto
 //! [`RustCrypto`]: https://github.com/RustCrypto
-//! [`rustls-post-quantum`]: https://crates.io/crates/rustls-post-quantum
 //! [`rustls-wolfcrypt-provider`]: https://github.com/wolfSSL/rustls-wolfcrypt-provider
 //! [`wolfCrypt`]: https://www.wolfssl.com/products/wolfcrypt
 //!
 //! #### Custom provider
 //!
-//! We also provide a simple example of writing your own provider in the [`custom-provider`]
-//! example. This example implements a minimal provider using parts of the [`RustCrypto`]
-//! ecosystem.
+//! We also provide a simple example of writing your own provider in the [custom provider example].
+//! This example implements a minimal provider using parts of the [`RustCrypto`] ecosystem.
 //!
 //! See the [Making a custom CryptoProvider] section of the documentation for more information
 //! on this topic.
 //!
-//! [`custom-provider`]: https://github.com/rustls/rustls/tree/main/provider-example/
+//! [custom provider example]: https://github.com/rustls/rustls/tree/main/provider-example/
 //! [`RustCrypto`]: https://github.com/RustCrypto
 //! [Making a custom CryptoProvider]: https://docs.rs/rustls/latest/rustls/crypto/struct.CryptoProvider.html#making-a-custom-cryptoprovider
 //!
@@ -160,7 +160,7 @@
 //! and use it for all connections made by that process.
 //!
 //! ```rust,no_run
-//! # #[cfg(feature = "aws_lc_rs")] {
+//! # #[cfg(feature = "aws-lc-rs")] {
 //! # let root_store: rustls::RootCertStore = panic!();
 //! let config = rustls::ClientConfig::builder()
 //!     .with_root_certificates(root_store)
@@ -172,7 +172,7 @@
 //! know what to expect to find in the server's certificate.
 //!
 //! ```rust
-//! # #[cfg(feature = "aws_lc_rs")] {
+//! # #[cfg(feature = "aws-lc-rs")] {
 //! # use rustls;
 //! # use webpki;
 //! # use std::sync::Arc;
@@ -215,7 +215,7 @@
 //! errors.
 //!
 //! ```rust,no_run
-//! # #[cfg(feature = "aws_lc_rs")] {
+//! # #[cfg(feature = "aws-lc-rs")] {
 //! # let mut client = rustls::ClientConnection::new(panic!(), panic!()).unwrap();
 //! # struct Socket { }
 //! # impl Socket {
@@ -269,11 +269,18 @@
 //!
 //! [`mio`]: https://docs.rs/mio/latest/mio/
 //!
+//! # Manual
+//!
+//! The [rustls manual](crate::manual) explains design decisions and includes how-to guidance.
+//!
 //! # Crate features
 //! Here's a list of what features are exposed by the rustls crate and what
 //! they mean.
 //!
-//! - `aws_lc_rs` (enabled by default): makes the rustls crate depend on the [`aws-lc-rs`] crate.
+//! - `std` (enabled by default): enable the high-level (buffered) Connection API and other functionality
+//!   which relies on the `std` library.
+//!
+//! - `aws-lc-rs`: makes the rustls crate depend on the [`aws-lc-rs`] crate.
 //!   Use `rustls::crypto::aws_lc_rs::default_provider().install_default()` to
 //!   use it as the default `CryptoProvider`, or provide it explicitly
 //!   when making a `ClientConfig` or `ServerConfig`.
@@ -286,42 +293,34 @@
 //!   use it as the default `CryptoProvider`, or provide it explicitly
 //!   when making a `ClientConfig` or `ServerConfig`.
 //!
-//! - `fips`: enable support for FIPS140-3-approved cryptography, via the aws-lc-rs crate.
-//!   This feature enables the `aws_lc_rs` feature, which makes the rustls crate depend
+//! - `fips`: enable support for FIPS140-3-approved cryptography, via the [`aws-lc-rs`] crate.
+//!   This feature enables the `aws-lc-rs` crate feature, which makes the rustls crate depend
 //!   on [aws-lc-rs](https://github.com/aws/aws-lc-rs).  It also changes the default
 //!   for [`ServerConfig::require_ems`] and [`ClientConfig::require_ems`].
 //!
 //!   See [manual::_06_fips] for more details.
 //!
 //! - `custom-provider`: disables implicit use of built-in providers (`aws-lc-rs` or `ring`). This forces
-//!    applications to manually install one, for instance, when using a custom `CryptoProvider`.
+//!   applications to manually install one, for instance, when using a custom `CryptoProvider`.
 //!
-//! - `tls12` (enabled by default): enable support for TLS version 1.2. Note that, due to the
-//!   additive nature of Cargo features and because it is enabled by default, other crates
-//!   in your dependency graph could re-enable it for your application. If you want to disable
-//!   TLS 1.2 for security reasons, consider explicitly enabling TLS 1.3 only in the config
-//!   builder API.
-//!
-//! - `logging` (enabled by default): make the rustls crate depend on the `log` crate.
+//! - `log` (enabled by default): make the rustls crate depend on the `log` crate.
 //!   rustls outputs interesting protocol-level messages at `trace!` and `debug!` level,
 //!   and protocol-level errors at `warn!` and `error!` level.  The log messages do not
 //!   contain secret key data, and so are safe to archive without affecting session security.
-//!
-//! - `read_buf`: when building with Rust Nightly, adds support for the unstable
-//!   `std::io::ReadBuf` and related APIs. This reduces costs from initializing
-//!   buffers. Will do nothing on non-Nightly releases.
 //!
 //! - `brotli`: uses the `brotli` crate for RFC8879 certificate compression support.
 //!
 //! - `zlib`: uses the `zlib-rs` crate for RFC8879 certificate compression support.
 //!
+//! [x25519mlkem768-manual]: manual::_05_defaults#about-the-post-quantum-secure-key-exchange-x25519mlkem768
 
 // Require docs for public APIs, deny unsafe code, etc.
 #![forbid(unsafe_code, unused_must_use)]
-#![cfg_attr(not(any(read_buf, bench)), forbid(unstable_features))]
+#![cfg_attr(not(any(bench, coverage_nightly)), forbid(unstable_features))]
 #![warn(
     clippy::alloc_instead_of_core,
-    clippy::clone_on_ref_ptr,
+    clippy::exhaustive_enums,
+    clippy::exhaustive_structs,
     clippy::manual_let_else,
     clippy::std_instead_of_core,
     clippy::use_self,
@@ -354,16 +353,10 @@
 )]
 // Enable documentation for all features on docs.rs
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
-// XXX: Because of https://github.com/rust-lang/rust/issues/54726, we cannot
-// write `#![rustversion::attr(nightly, feature(read_buf))]` here. Instead,
-// build.rs set `read_buf` for (only) Rust Nightly to get the same effect.
-//
-// All the other conditional logic in the crate could use
-// `#[rustversion::nightly]` instead of `#[cfg(read_buf)]`; `#[cfg(read_buf)]`
-// is used to avoid needing `rustversion` to be compiled twice during
-// cross-compiling.
-#![cfg_attr(read_buf, feature(read_buf))]
-#![cfg_attr(read_buf, feature(core_io_borrowed_buf))]
+// Enable coverage() attr for nightly coverage builds, see
+// <https://github.com/rust-lang/rust/issues/84605>
+// (`coverage_nightly` is a cfg set by `cargo-llvm-cov`)
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 #![cfg_attr(bench, feature(test))]
 #![no_std]
 
@@ -385,10 +378,10 @@ use crate::crypto::CryptoProvider;
 extern crate test;
 
 // log for logging (optional).
-#[cfg(feature = "logging")]
+#[cfg(feature = "log")]
 use log;
 
-#[cfg(not(feature = "logging"))]
+#[cfg(not(feature = "log"))]
 mod log {
     macro_rules! trace    ( ($($tt:tt)*) => {{}} );
     macro_rules! debug    ( ($($tt:tt)*) => {{}} );
@@ -402,11 +395,13 @@ mod log {
 mod test_macros;
 
 /// This internal `sync` module aliases the `Arc` implementation to allow downstream forks
-/// of rustls targetting architectures without atomic pointers to replace the implementation
+/// of rustls targeting architectures without atomic pointers to replace the implementation
 /// with another implementation such as `portable_atomic_util::Arc` in one central location.
 mod sync {
     #[allow(clippy::disallowed_types)]
     pub(crate) type Arc<T> = alloc::sync::Arc<T>;
+    #[allow(clippy::disallowed_types)]
+    pub(crate) type Weak<T> = alloc::sync::Weak<T>;
 }
 
 #[macro_use]
@@ -424,7 +419,6 @@ mod rand;
 mod record_layer;
 #[cfg(feature = "std")]
 mod stream;
-#[cfg(feature = "tls12")]
 mod tls12;
 mod tls13;
 mod vecbuf;
@@ -434,7 +428,7 @@ mod verifybench;
 mod x509;
 #[macro_use]
 mod check;
-#[cfg(feature = "logging")]
+#[cfg(feature = "log")]
 mod bs_debug;
 mod builder;
 mod enums;
@@ -459,21 +453,10 @@ pub mod internal {
             pub use crate::msgs::codec::{Codec, Reader};
         }
         pub mod enums {
-            pub use crate::msgs::enums::{
-                AlertLevel, CertificateType, Compression, EchVersion, HpkeAead, HpkeKdf, HpkeKem,
-                NamedGroup,
-            };
+            pub use crate::msgs::enums::{AlertLevel, ExtensionType};
         }
         pub mod fragmenter {
             pub use crate::msgs::fragmenter::MessageFragmenter;
-        }
-        pub mod handshake {
-            pub use crate::msgs::handshake::{
-                CertificateChain, ClientExtension, ClientHelloPayload, DistinguishedName,
-                EchConfigContents, EchConfigPayload, HandshakeMessagePayload, HandshakePayload,
-                HpkeKeyConfig, HpkeSymmetricCipherSuite, KeyShareEntry, Random, ServerExtension,
-                ServerName, SessionId,
-            };
         }
         pub mod message {
             pub use crate::msgs::message::{
@@ -519,12 +502,12 @@ pub mod internal {
 /// [`unbuffered-client`]: https://github.com/rustls/rustls/blob/main/examples/src/bin/unbuffered-client.rs
 /// [`unbuffered-server`]: https://github.com/rustls/rustls/blob/main/examples/src/bin/unbuffered-server.rs
 pub mod unbuffered {
+    pub use crate::conn::UnbufferedConnectionCommon;
     pub use crate::conn::unbuffered::{
         AppDataRecord, ConnectionState, EncodeError, EncodeTlsData, EncryptError,
         InsufficientSizeError, ReadEarlyData, ReadTraffic, TransmitTlsData, UnbufferedStatus,
         WriteTraffic,
     };
-    pub use crate::conn::UnbufferedConnectionCommon;
 }
 
 // The public interface is:
@@ -532,14 +515,15 @@ pub use crate::builder::{ConfigBuilder, ConfigSide, WantsVerifier, WantsVersions
 pub use crate::common_state::{CommonState, HandshakeKind, IoState, Side};
 #[cfg(feature = "std")]
 pub use crate::conn::{Connection, Reader, Writer};
-pub use crate::conn::{ConnectionCommon, SideData};
+pub use crate::conn::{ConnectionCommon, SideData, kernel};
 pub use crate::enums::{
     AlertDescription, CertificateCompressionAlgorithm, CipherSuite, ContentType, HandshakeType,
     ProtocolVersion, SignatureAlgorithm, SignatureScheme,
 };
 pub use crate::error::{
-    CertRevocationListError, CertificateError, EncryptedClientHelloError, Error, InconsistentKeys,
-    InvalidMessage, OtherError, PeerIncompatible, PeerMisbehaved,
+    CertRevocationListError, CertificateError, EncryptedClientHelloError, Error,
+    ExtendedKeyPurpose, InconsistentKeys, InvalidMessage, OtherError, PeerIncompatible,
+    PeerMisbehaved, RejectedEch,
 };
 pub use crate::key_log::{KeyLog, NoKeyLog};
 #[cfg(feature = "std")]
@@ -554,13 +538,10 @@ pub use crate::suites::{
 };
 #[cfg(feature = "std")]
 pub use crate::ticketer::TicketRotator;
-#[cfg(any(feature = "std", feature = "hashbrown"))] // < XXX: incorrect feature gate
-pub use crate::ticketer::TicketSwitcher;
-#[cfg(feature = "tls12")]
 pub use crate::tls12::Tls12CipherSuite;
 pub use crate::tls13::Tls13CipherSuite;
 pub use crate::verify::DigitallySignedStruct;
-pub use crate::versions::{SupportedProtocolVersion, ALL_VERSIONS, DEFAULT_VERSIONS};
+pub use crate::versions::{ALL_VERSIONS, DEFAULT_VERSIONS, SupportedProtocolVersion};
 pub use crate::webpki::RootCertStore;
 
 /// Items for use in a client.
@@ -571,7 +552,8 @@ pub mod client {
     mod ech;
     pub(super) mod handy;
     mod hs;
-    #[cfg(feature = "tls12")]
+    #[cfg(test)]
+    mod test;
     mod tls12;
     mod tls13;
 
@@ -594,10 +576,13 @@ pub mod client {
         pub use crate::verify::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
     }
 
+    pub(crate) use tls12::{TLS12_HANDLER, Tls12Handler};
+    pub(crate) use tls13::{TLS13_HANDLER, Tls13Handler};
+
     pub use crate::msgs::persist::{Tls12ClientSessionValue, Tls13ClientSessionValue};
     pub use crate::webpki::{
-        verify_server_cert_signed_by_trust_anchor, verify_server_name, ServerCertVerifierBuilder,
-        VerifierBuilderError, WebPkiServerVerifier,
+        ServerCertVerifierBuilder, VerifierBuilderError, WebPkiServerVerifier,
+        verify_server_cert_signed_by_trust_anchor, verify_server_name,
     };
 }
 
@@ -612,7 +597,8 @@ pub mod server {
     pub(crate) mod handy;
     mod hs;
     mod server_conn;
-    #[cfg(feature = "tls12")]
+    #[cfg(test)]
+    mod test;
     mod tls12;
     mod tls13;
 
@@ -629,6 +615,7 @@ pub mod server {
     #[cfg(feature = "std")]
     pub use server_conn::{AcceptedAlert, Acceptor, ReadEarlyData, ServerConnection};
 
+    pub use crate::enums::CertificateType;
     pub use crate::verify::NoClientAuth;
     pub use crate::webpki::{
         ClientCertVerifierBuilder, ParsedCertificate, VerifierBuilderError, WebPkiClientVerifier,
@@ -638,6 +625,9 @@ pub mod server {
     pub mod danger {
         pub use crate::verify::{ClientCertVerified, ClientCertVerifier};
     }
+
+    pub(crate) use tls12::{TLS12_HANDLER, Tls12Handler};
+    pub(crate) use tls13::{TLS13_HANDLER, Tls13Handler};
 }
 
 pub use server::ServerConfig;
@@ -648,9 +638,9 @@ pub use server::ServerConnection;
 ///
 /// ALL_VERSIONS is a provided as an array of all of these values.
 pub mod version {
-    #[cfg(feature = "tls12")]
-    pub use crate::versions::TLS12;
-    pub use crate::versions::TLS13;
+    pub use crate::versions::{
+        TLS12, TLS12_VERSION, TLS13, TLS13_VERSION, Tls12Version, Tls13Version,
+    };
 }
 
 /// Re-exports the contents of the [rustls-pki-types](https://docs.rs/rustls-pki-types) crate for easy access
@@ -661,14 +651,14 @@ pub mod pki_types {
 
 /// Message signing interfaces.
 pub mod sign {
-    pub use crate::crypto::signer::{CertifiedKey, Signer, SigningKey};
+    pub use crate::crypto::signer::{CertifiedKey, Signer, SigningKey, SingleCertAndKey};
 }
 
 /// APIs for implementing QUIC TLS
 pub mod quic;
 
-#[cfg(any(feature = "std", feature = "hashbrown"))] // < XXX: incorrect feature gate
 /// APIs for implementing TLS tickets
+#[cfg(any(feature = "std", feature = "hashbrown"))] // < XXX: incorrect feature gate
 pub mod ticketer;
 
 /// This is the rustls manual.
@@ -685,12 +675,16 @@ pub(crate) mod polyfill;
 #[cfg(any(feature = "std", feature = "hashbrown"))]
 mod hash_map {
     #[cfg(feature = "std")]
-    pub(crate) use std::collections::hash_map::Entry;
-    #[cfg(feature = "std")]
     pub(crate) use std::collections::HashMap;
+    #[cfg(feature = "std")]
+    pub(crate) use std::collections::hash_map::Entry;
 
     #[cfg(all(not(feature = "std"), feature = "hashbrown"))]
-    pub(crate) use hashbrown::hash_map::Entry;
-    #[cfg(all(not(feature = "std"), feature = "hashbrown"))]
     pub(crate) use hashbrown::HashMap;
+    #[cfg(all(not(feature = "std"), feature = "hashbrown"))]
+    pub(crate) use hashbrown::hash_map::Entry;
+}
+
+mod sealed {
+    pub trait Sealed {}
 }

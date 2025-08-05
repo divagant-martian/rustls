@@ -12,43 +12,33 @@ use crate::error::Error;
 #[cfg(debug_assertions)]
 use crate::log::debug;
 use crate::polyfill::try_split_at;
-use crate::rand::GetRandomFailed;
 use crate::server::ProducesTickets;
 use crate::sync::Arc;
 
 /// A concrete, safe ticket creation mechanism.
+#[non_exhaustive]
 pub struct Ticketer {}
 
 impl Ticketer {
-    /// Make the recommended `Ticketer`.  This produces tickets
-    /// with a 12 hour life and randomly generated keys.
+    /// Make the recommended `Ticketer`.
+    ///
+    /// This produces tickets:
+    ///
+    /// - where each lasts for at least 6 hours,
+    /// - with randomly generated keys, and
+    /// - where keys are rotated every 6 hours.
     ///
     /// The encryption mechanism used is Chacha20Poly1305.
     #[cfg(feature = "std")]
     pub fn new() -> Result<Arc<dyn ProducesTickets>, Error> {
         Ok(Arc::new(crate::ticketer::TicketRotator::new(
-            6 * 60 * 60,
+            crate::ticketer::TicketRotator::SIX_HOURS,
             make_ticket_generator,
-        )?))
-    }
-
-    /// Make the recommended `Ticketer`.  This produces tickets
-    /// with a 12 hour life and randomly generated keys.
-    ///
-    /// The encryption mechanism used is Chacha20Poly1305.
-    #[cfg(not(feature = "std"))]
-    pub fn new<M: crate::lock::MakeMutex>(
-        time_provider: &'static dyn TimeProvider,
-    ) -> Result<Arc<dyn ProducesTickets>, Error> {
-        Ok(Arc::new(crate::ticketer::TicketSwitcher::new::<M>(
-            6 * 60 * 60,
-            make_ticket_generator,
-            time_provider,
         )?))
     }
 }
 
-fn make_ticket_generator() -> Result<Box<dyn ProducesTickets>, GetRandomFailed> {
+fn make_ticket_generator() -> Result<Box<dyn ProducesTickets>, Error> {
     Ok(Box::new(AeadTicketer::new()?))
 }
 
@@ -60,7 +50,6 @@ struct AeadTicketer {
     alg: &'static aead::Algorithm,
     key: aead::LessSafeKey,
     key_name: [u8; 16],
-    lifetime: u32,
 
     /// Tracks the largest ciphertext produced by `encrypt`, and
     /// uses it to early-reject `decrypt` queries that are too long.
@@ -74,24 +63,23 @@ struct AeadTicketer {
 }
 
 impl AeadTicketer {
-    fn new() -> Result<Self, GetRandomFailed> {
+    fn new() -> Result<Self, Error> {
         let mut key = [0u8; 32];
         SystemRandom::new()
             .fill(&mut key)
-            .map_err(|_| GetRandomFailed)?;
+            .map_err(|_| Error::FailedToGetRandomBytes)?;
 
         let key = aead::UnboundKey::new(TICKETER_AEAD, &key).unwrap();
 
         let mut key_name = [0u8; 16];
         SystemRandom::new()
             .fill(&mut key_name)
-            .map_err(|_| GetRandomFailed)?;
+            .map_err(|_| Error::FailedToGetRandomBytes)?;
 
         Ok(Self {
             alg: TICKETER_AEAD,
             key: aead::LessSafeKey::new(key),
             key_name,
-            lifetime: 60 * 60 * 12,
             maximum_ciphertext_len: AtomicUsize::new(0),
         })
     }
@@ -103,7 +91,9 @@ impl ProducesTickets for AeadTicketer {
     }
 
     fn lifetime(&self) -> u32 {
-        self.lifetime
+        // this is not used, as this ticketer is only used via a `TicketRotator`
+        // that is responsible for defining and managing the lifetime of tickets.
+        0
     }
 
     /// Encrypt `message` and return the ciphertext.
@@ -164,7 +154,7 @@ impl ProducesTickets for AeadTicketer {
 
         // checking the key_name is the expected one, *and* then putting it into the
         // additionally authenticated data is duplicative.  this check quickly rejects
-        // tickets for a different ticketer (see `TicketSwitcher`), while including it
+        // tickets for a different ticketer (see `TicketRotator`), while including it
         // in the AAD ensures it is authenticated independent of that check and that
         // any attempted attack on the integrity such as [^1] must happen for each
         // `key_label`, not over a population of potential keys.  this approach
@@ -200,7 +190,6 @@ impl Debug for AeadTicketer {
         // Note: we deliberately omit the key from the debug output.
         f.debug_struct("AeadTicketer")
             .field("alg", &self.alg)
-            .field("lifetime", &self.lifetime)
             .finish()
     }
 }
@@ -304,64 +293,6 @@ mod tests {
     }
 
     #[test]
-    fn ticketswitcher_switching_test() {
-        #[expect(deprecated)]
-        let t = Arc::new(crate::ticketer::TicketSwitcher::new(1, make_ticket_generator).unwrap());
-        let now = UnixTime::now();
-        let cipher1 = t.encrypt(b"ticket 1").unwrap();
-        assert_eq!(t.decrypt(&cipher1).unwrap(), b"ticket 1");
-        {
-            // Trigger new ticketer
-            t.maybe_roll(UnixTime::since_unix_epoch(Duration::from_secs(
-                now.as_secs() + 10,
-            )));
-        }
-        let cipher2 = t.encrypt(b"ticket 2").unwrap();
-        assert_eq!(t.decrypt(&cipher1).unwrap(), b"ticket 1");
-        assert_eq!(t.decrypt(&cipher2).unwrap(), b"ticket 2");
-        {
-            // Trigger new ticketer
-            t.maybe_roll(UnixTime::since_unix_epoch(Duration::from_secs(
-                now.as_secs() + 20,
-            )));
-        }
-        let cipher3 = t.encrypt(b"ticket 3").unwrap();
-        assert!(t.decrypt(&cipher1).is_none());
-        assert_eq!(t.decrypt(&cipher2).unwrap(), b"ticket 2");
-        assert_eq!(t.decrypt(&cipher3).unwrap(), b"ticket 3");
-    }
-
-    #[test]
-    fn ticketswitcher_recover_test() {
-        #[expect(deprecated)]
-        let mut t = crate::ticketer::TicketSwitcher::new(1, make_ticket_generator).unwrap();
-        let now = UnixTime::now();
-        let cipher1 = t.encrypt(b"ticket 1").unwrap();
-        assert_eq!(t.decrypt(&cipher1).unwrap(), b"ticket 1");
-        t.generator = fail_generator;
-        {
-            // Failed new ticketer
-            t.maybe_roll(UnixTime::since_unix_epoch(Duration::from_secs(
-                now.as_secs() + 10,
-            )));
-        }
-        t.generator = make_ticket_generator;
-        let cipher2 = t.encrypt(b"ticket 2").unwrap();
-        assert_eq!(t.decrypt(&cipher1).unwrap(), b"ticket 1");
-        assert_eq!(t.decrypt(&cipher2).unwrap(), b"ticket 2");
-        {
-            // recover
-            t.maybe_roll(UnixTime::since_unix_epoch(Duration::from_secs(
-                now.as_secs() + 20,
-            )));
-        }
-        let cipher3 = t.encrypt(b"ticket 3").unwrap();
-        assert!(t.decrypt(&cipher1).is_none());
-        assert_eq!(t.decrypt(&cipher2).unwrap(), b"ticket 2");
-        assert_eq!(t.decrypt(&cipher3).unwrap(), b"ticket 3");
-    }
-
-    #[test]
     fn aeadticketer_is_debug_and_producestickets() {
         use alloc::format;
 
@@ -369,13 +300,13 @@ mod tests {
 
         let t = make_ticket_generator().unwrap();
 
-        let expect = format!("AeadTicketer {{ alg: {TICKETER_AEAD:?}, lifetime: 43200 }}");
-        assert_eq!(format!("{:?}", t), expect);
+        let expect = format!("AeadTicketer {{ alg: {TICKETER_AEAD:?} }}");
+        assert_eq!(format!("{t:?}"), expect);
         assert!(t.enabled());
-        assert_eq!(t.lifetime(), 43200);
+        assert_eq!(t.lifetime(), 0);
     }
 
-    fn fail_generator() -> Result<Box<dyn ProducesTickets>, GetRandomFailed> {
-        Err(GetRandomFailed)
+    fn fail_generator() -> Result<Box<dyn ProducesTickets>, Error> {
+        Err(Error::FailedToGetRandomBytes)
     }
 }

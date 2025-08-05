@@ -6,6 +6,7 @@ use crate::sync::Arc;
 use crate::{server, sign};
 
 /// Something which never stores sessions.
+#[allow(clippy::exhaustive_structs)]
 #[derive(Debug)]
 pub struct NoServerSessionStorage {}
 
@@ -166,39 +167,6 @@ impl server::ProducesTickets for NeverProducesTickets {
     }
 }
 
-/// Something which always resolves to the same cert chain.
-#[derive(Debug)]
-pub(super) struct AlwaysResolvesChain(Arc<sign::CertifiedKey>);
-
-impl AlwaysResolvesChain {
-    /// Creates an `AlwaysResolvesChain`, using the supplied `CertifiedKey`.
-    pub(super) fn new(certified_key: sign::CertifiedKey) -> Self {
-        Self(Arc::new(certified_key))
-    }
-
-    /// Creates an `AlwaysResolvesChain`, using the supplied `CertifiedKey` and OCSP response.
-    ///
-    /// If non-empty, the given OCSP response is attached.
-    pub(super) fn new_with_extras(certified_key: sign::CertifiedKey, ocsp: Vec<u8>) -> Self {
-        let mut r = Self::new(certified_key);
-
-        {
-            let cert = Arc::make_mut(&mut r.0);
-            if !ocsp.is_empty() {
-                cert.ocsp = Some(ocsp);
-            }
-        }
-
-        r
-    }
-}
-
-impl server::ResolvesServerCert for AlwaysResolvesChain {
-    fn resolve(&self, _client_hello: ClientHello<'_>) -> Option<Arc<sign::CertifiedKey>> {
-        Some(Arc::clone(&self.0))
-    }
-}
-
 /// An exemplar `ResolvesServerCert` implementation that always resolves to a single
 /// [RFC 7250] raw public key.
 ///
@@ -214,8 +182,8 @@ impl AlwaysResolvesServerRawPublicKeys {
 }
 
 impl server::ResolvesServerCert for AlwaysResolvesServerRawPublicKeys {
-    fn resolve(&self, _client_hello: ClientHello<'_>) -> Option<Arc<sign::CertifiedKey>> {
-        Some(Arc::clone(&self.0))
+    fn resolve(&self, _client_hello: &ClientHello<'_>) -> Option<Arc<sign::CertifiedKey>> {
+        Some(self.0.clone())
     }
 
     fn only_raw_public_keys(&self) -> bool {
@@ -225,7 +193,6 @@ impl server::ResolvesServerCert for AlwaysResolvesServerRawPublicKeys {
 
 #[cfg(any(feature = "std", feature = "hashbrown"))]
 mod sni_resolver {
-    use alloc::string::{String, ToString};
     use core::fmt::Debug;
 
     use pki_types::{DnsName, ServerName};
@@ -234,14 +201,14 @@ mod sni_resolver {
     use crate::hash_map::HashMap;
     use crate::server::ClientHello;
     use crate::sync::Arc;
-    use crate::webpki::{verify_server_name, ParsedCertificate};
+    use crate::webpki::{ParsedCertificate, verify_server_name};
     use crate::{server, sign};
 
     /// Something that resolves do different cert chains/keys based
     /// on client-supplied server name (via SNI).
     #[derive(Debug)]
     pub struct ResolvesServerCertUsingSni {
-        by_name: HashMap<String, Arc<sign::CertifiedKey>>,
+        by_name: HashMap<DnsName<'static>, Arc<sign::CertifiedKey>>,
     }
 
     impl ResolvesServerCertUsingSni {
@@ -254,17 +221,9 @@ mod sni_resolver {
 
         /// Add a new `sign::CertifiedKey` to be used for the given SNI `name`.
         ///
-        /// This function fails if `name` is not a valid DNS name, or if
-        /// it's not valid for the supplied certificate, or if the certificate
-        /// chain is syntactically faulty.
-        pub fn add(&mut self, name: &str, ck: sign::CertifiedKey) -> Result<(), Error> {
-            let server_name = {
-                let checked_name = DnsName::try_from(name)
-                    .map_err(|_| Error::General("Bad DNS name".into()))
-                    .map(|name| name.to_lowercase_owned())?;
-                ServerName::DnsName(checked_name)
-            };
-
+        /// This function fails if the `name` is not valid for the supplied certificate, or if
+        /// the certificate chain is syntactically faulty.
+        pub fn add(&mut self, name: DnsName<'static>, ck: sign::CertifiedKey) -> Result<(), Error> {
             // Check the certificate chain for validity:
             // - it should be non-empty list
             // - the first certificate should be parsable as a x509v3,
@@ -274,20 +233,22 @@ mod sni_resolver {
             // These checks are not security-sensitive.  They are the
             // *server* attempting to detect accidental misconfiguration.
 
+            let wrapped = ServerName::DnsName(name);
             ck.end_entity_cert()
                 .and_then(ParsedCertificate::try_from)
-                .and_then(|cert| verify_server_name(&cert, &server_name))?;
+                .and_then(|cert| verify_server_name(&cert, &wrapped))?;
 
-            if let ServerName::DnsName(name) = server_name {
-                self.by_name
-                    .insert(name.as_ref().to_string(), Arc::new(ck));
-            }
+            let ServerName::DnsName(name) = wrapped else {
+                unreachable!()
+            };
+
+            self.by_name.insert(name, Arc::new(ck));
             Ok(())
         }
     }
 
     impl server::ResolvesServerCert for ResolvesServerCertUsingSni {
-        fn resolve(&self, client_hello: ClientHello<'_>) -> Option<Arc<sign::CertifiedKey>> {
+        fn resolve(&self, client_hello: &ClientHello<'_>) -> Option<Arc<sign::CertifiedKey>> {
             if let Some(name) = client_hello.server_name() {
                 self.by_name.get(name).cloned()
             } else {
@@ -305,17 +266,20 @@ mod sni_resolver {
         #[test]
         fn test_resolvesservercertusingsni_requires_sni() {
             let rscsni = ResolvesServerCertUsingSni::new();
-            assert!(rscsni
-                .resolve(ClientHello {
-                    server_name: &None,
-                    signature_schemes: &[],
-                    alpn: None,
-                    server_cert_types: None,
-                    client_cert_types: None,
-                    cipher_suites: &[],
-                    certificate_authorities: None,
-                })
-                .is_none());
+            assert!(
+                rscsni
+                    .resolve(&ClientHello {
+                        server_name: &None,
+                        signature_schemes: &[],
+                        alpn: None,
+                        server_cert_types: None,
+                        client_cert_types: None,
+                        cipher_suites: &[],
+                        certificate_authorities: None,
+                        named_groups: None,
+                    })
+                    .is_none()
+            );
         }
 
         #[test]
@@ -324,17 +288,20 @@ mod sni_resolver {
             let name = DnsName::try_from("hello.com")
                 .unwrap()
                 .to_owned();
-            assert!(rscsni
-                .resolve(ClientHello {
-                    server_name: &Some(name),
-                    signature_schemes: &[],
-                    alpn: None,
-                    server_cert_types: None,
-                    client_cert_types: None,
-                    cipher_suites: &[],
-                    certificate_authorities: None,
-                })
-                .is_none());
+            assert!(
+                rscsni
+                    .resolve(&ClientHello {
+                        server_name: &Some(name),
+                        signature_schemes: &[],
+                        alpn: None,
+                        server_cert_types: None,
+                        client_cert_types: None,
+                        cipher_suites: &[],
+                        certificate_authorities: None,
+                        named_groups: None,
+                    })
+                    .is_none()
+            );
         }
     }
 }

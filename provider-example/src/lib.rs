@@ -1,4 +1,18 @@
 #![no_std]
+#![warn(
+    clippy::alloc_instead_of_core,
+    clippy::manual_let_else,
+    clippy::std_instead_of_core,
+    clippy::use_self,
+    clippy::upper_case_acronyms,
+    elided_lifetimes_in_paths,
+    trivial_casts,
+    trivial_numeric_casts,
+    unreachable_pub,
+    unused_import_braces,
+    unused_extern_crates,
+    unused_qualifications
+)]
 
 extern crate alloc;
 #[cfg(feature = "std")]
@@ -68,6 +82,7 @@ pub static TLS13_CHACHA20_POLY1305_SHA256: rustls::SupportedCipherSuite =
             hash_provider: &hash::Sha256,
             confidentiality_limit: u64::MAX,
         },
+        protocol_version: rustls::version::TLS13_VERSION,
         hkdf_provider: &rustls::crypto::tls13::HkdfUsingHmac(&hmac::Sha256Hmac),
         aead_alg: &aead::Chacha20Poly1305,
         quic: None,
@@ -80,6 +95,7 @@ pub static TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256: rustls::SupportedCipherS
             hash_provider: &hash::Sha256,
             confidentiality_limit: u64::MAX,
         },
+        protocol_version: rustls::version::TLS12_VERSION,
         kx: rustls::crypto::KeyExchangeAlgorithm::ECDHE,
         sign: &[
             rustls::SignatureScheme::RSA_PSS_SHA256,

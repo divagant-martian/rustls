@@ -1,44 +1,38 @@
 //! Tests for configuring and using a [`ServerCertVerifier`] for a client.
 
-#![allow(clippy::duplicate_mod)]
+#![allow(clippy::disallowed_types, clippy::duplicate_mod)]
 
 use super::*;
 
 mod common;
 
 use common::{
-    client_config_builder, client_config_builder_with_versions, do_handshake,
+    Arc, ErrorFromPeer, KeyType, MockServerVerifier, client_config_builder, do_handshake,
     do_handshake_until_both_error, do_handshake_until_error, make_client_config_with_versions,
-    make_pair_for_arc_configs, make_server_config, server_config_builder, transfer_altered,
-    Altered, Arc, ErrorFromPeer, KeyType, MockServerVerifier, ALL_KEY_TYPES,
+    make_pair_for_arc_configs, make_server_config, server_config_builder,
 };
-
 use pki_types::{CertificateDer, ServerName};
-
-use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::client::WebPkiServerVerifier;
-use rustls::internal::msgs::handshake::{ClientExtension, HandshakePayload};
-use rustls::internal::msgs::message::{Message, MessagePayload};
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::server::{ClientHello, ResolvesServerCert};
 use rustls::sign::CertifiedKey;
-use rustls::version::{TLS12, TLS13};
 use rustls::{
     AlertDescription, CertificateError, DigitallySignedStruct, DistinguishedName, Error,
     InvalidMessage, RootCertStore,
 };
-
 use x509_parser::prelude::FromDer;
 use x509_parser::x509::X509Name;
 
 #[test]
 fn client_can_override_certificate_verification() {
-    for kt in ALL_KEY_TYPES.iter() {
+    let provider = provider::default_provider();
+    for kt in KeyType::all_for_provider(&provider).iter() {
         let verifier = Arc::new(MockServerVerifier::accepts_anything());
 
-        let server_config = Arc::new(make_server_config(*kt));
+        let server_config = Arc::new(make_server_config(*kt, &provider));
 
         for version in rustls::ALL_VERSIONS {
-            let mut client_config = make_client_config_with_versions(*kt, &[version]);
+            let mut client_config = make_client_config_with_versions(*kt, &[version], &provider);
             client_config
                 .dangerous()
                 .set_certificate_verifier(verifier.clone());
@@ -52,15 +46,16 @@ fn client_can_override_certificate_verification() {
 
 #[test]
 fn client_can_override_certificate_verification_and_reject_certificate() {
-    for kt in ALL_KEY_TYPES.iter() {
+    let provider = provider::default_provider();
+    for kt in KeyType::all_for_provider(&provider).iter() {
         let verifier = Arc::new(MockServerVerifier::rejects_certificate(
             Error::InvalidMessage(InvalidMessage::HandshakePayloadTooLarge),
         ));
 
-        let server_config = Arc::new(make_server_config(*kt));
+        let server_config = Arc::new(make_server_config(*kt, &provider));
 
         for version in rustls::ALL_VERSIONS {
-            let mut client_config = make_client_config_with_versions(*kt, &[version]);
+            let mut client_config = make_client_config_with_versions(*kt, &[version], &provider);
             client_config
                 .dangerous()
                 .set_certificate_verifier(verifier.clone());
@@ -81,11 +76,12 @@ fn client_can_override_certificate_verification_and_reject_certificate() {
     }
 }
 
-#[cfg(feature = "tls12")]
 #[test]
 fn client_can_override_certificate_verification_and_reject_tls12_signatures() {
-    for kt in ALL_KEY_TYPES.iter() {
-        let mut client_config = make_client_config_with_versions(*kt, &[&rustls::version::TLS12]);
+    let provider = provider::default_provider();
+    for kt in KeyType::all_for_provider(&provider).iter() {
+        let mut client_config =
+            make_client_config_with_versions(*kt, &[&rustls::version::TLS12], &provider);
         let verifier = Arc::new(MockServerVerifier::rejects_tls12_signatures(
             Error::InvalidMessage(InvalidMessage::HandshakePayloadTooLarge),
         ));
@@ -94,7 +90,7 @@ fn client_can_override_certificate_verification_and_reject_tls12_signatures() {
             .dangerous()
             .set_certificate_verifier(verifier);
 
-        let server_config = Arc::new(make_server_config(*kt));
+        let server_config = Arc::new(make_server_config(*kt, &provider));
 
         let (mut client, mut server) =
             make_pair_for_arc_configs(&Arc::new(client_config), &server_config);
@@ -113,8 +109,13 @@ fn client_can_override_certificate_verification_and_reject_tls12_signatures() {
 
 #[test]
 fn client_can_override_certificate_verification_and_reject_tls13_signatures() {
-    for kt in ALL_KEY_TYPES.iter() {
-        let mut client_config = make_client_config_with_versions(*kt, &[&rustls::version::TLS13]);
+    let provider = provider::default_provider();
+    for kt in KeyType::all_for_provider(&provider).iter() {
+        let mut client_config = make_client_config_with_versions(
+            *kt,
+            &[&rustls::version::TLS13],
+            &provider::default_provider(),
+        );
         let verifier = Arc::new(MockServerVerifier::rejects_tls13_signatures(
             Error::InvalidMessage(InvalidMessage::HandshakePayloadTooLarge),
         ));
@@ -123,7 +124,7 @@ fn client_can_override_certificate_verification_and_reject_tls13_signatures() {
             .dangerous()
             .set_certificate_verifier(verifier);
 
-        let server_config = Arc::new(make_server_config(*kt));
+        let server_config = Arc::new(make_server_config(*kt, &provider));
 
         let (mut client, mut server) =
             make_pair_for_arc_configs(&Arc::new(client_config), &server_config);
@@ -142,13 +143,14 @@ fn client_can_override_certificate_verification_and_reject_tls13_signatures() {
 
 #[test]
 fn client_can_override_certificate_verification_and_offer_no_signature_schemes() {
-    for kt in ALL_KEY_TYPES.iter() {
+    let provider = provider::default_provider();
+    for kt in KeyType::all_for_provider(&provider).iter() {
         let verifier = Arc::new(MockServerVerifier::offers_no_signature_schemes());
 
-        let server_config = Arc::new(make_server_config(*kt));
+        let server_config = Arc::new(make_server_config(*kt, &provider));
 
         for version in rustls::ALL_VERSIONS {
-            let mut client_config = make_client_config_with_versions(*kt, &[version]);
+            let mut client_config = make_client_config_with_versions(*kt, &[version], &provider);
             client_config
                 .dangerous()
                 .set_certificate_verifier(verifier.clone());
@@ -159,10 +161,10 @@ fn client_can_override_certificate_verification_and_offer_no_signature_schemes()
             assert_eq!(
                 errs,
                 Err(vec![
-                    ErrorFromPeer::Server(Error::PeerIncompatible(
-                        rustls::PeerIncompatible::NoSignatureSchemesInCommon
+                    ErrorFromPeer::Server(Error::InvalidMessage(
+                        rustls::InvalidMessage::NoSignatureSchemes
                     )),
-                    ErrorFromPeer::Client(Error::AlertReceived(AlertDescription::HandshakeFailure)),
+                    ErrorFromPeer::Client(Error::AlertReceived(AlertDescription::DecodeError)),
                 ])
             );
         }
@@ -170,59 +172,8 @@ fn client_can_override_certificate_verification_and_offer_no_signature_schemes()
 }
 
 #[test]
-fn cas_extension_in_client_hello_if_server_verifier_requests_it() {
-    let server_config = Arc::new(make_server_config(KeyType::Rsa2048));
-
-    let mut root_cert_store = RootCertStore::empty();
-    root_cert_store
-        .add(KeyType::Rsa2048.ca_cert())
-        .unwrap();
-
-    let server_verifier = WebPkiServerVerifier::builder_with_provider(
-        Arc::new(root_cert_store),
-        Arc::new(provider::default_provider()),
-    )
-    .build()
-    .unwrap();
-    let cas_sending_server_verifier = Arc::new(ServerCertVerifierWithCasExt {
-        verifier: server_verifier.clone(),
-        ca_names: vec![KeyType::Rsa2048
-            .ca_distinguished_name()
-            .to_vec()
-            .into()],
-    });
-
-    for (protocol_version, cas_extension_expected) in [(&TLS12, false), (&TLS13, true)] {
-        let client_config = Arc::new(
-            client_config_builder_with_versions(&[protocol_version])
-                .dangerous()
-                .with_custom_certificate_verifier(cas_sending_server_verifier.clone())
-                .with_no_client_auth(),
-        );
-
-        let expect_cas_extension = |msg: &mut Message<'_>| -> Altered {
-            if let MessagePayload::Handshake { parsed, .. } = &msg.payload {
-                if let HandshakePayload::ClientHello(ch) = &parsed.payload {
-                    assert_eq!(
-                        ch.extensions
-                            .iter()
-                            .any(|ext| matches!(ext, ClientExtension::AuthorityNames(_))),
-                        cas_extension_expected
-                    );
-                    println!("cas extension expectation met! cas_extension_expected: {cas_extension_expected}");
-                }
-            }
-            Altered::InPlace
-        };
-
-        let (client, server) = make_pair_for_arc_configs(&client_config, &server_config);
-        let (mut client, mut server) = (client.into(), server.into());
-        transfer_altered(&mut client, expect_cas_extension, &mut server);
-    }
-}
-
-#[test]
 fn client_can_request_certain_trusted_cas() {
+    let provider = provider::default_provider();
     // These keys have CAs with different names, which our test needs.
     // They also share the same sigalgs, so the server won't pick one over the other based on sigalgs.
     let key_types = [KeyType::Rsa2048, KeyType::Rsa3072, KeyType::Rsa4096];
@@ -234,7 +185,7 @@ fn client_can_request_certain_trusted_cas() {
                     kt.ca_distinguished_name()
                         .to_vec()
                         .into(),
-                    kt.certified_key_with_cert_chain()
+                    kt.certified_key_with_cert_chain(&provider)
                         .unwrap(),
                 )
             })
@@ -242,7 +193,7 @@ fn client_can_request_certain_trusted_cas() {
     );
 
     let server_config = Arc::new(
-        server_config_builder()
+        server_config_builder(&provider)
             .with_no_client_auth()
             .with_cert_resolver(Arc::new(cert_resolver.clone())),
     );
@@ -256,21 +207,21 @@ fn client_can_request_certain_trusted_cas() {
             .unwrap();
         let server_verifier = WebPkiServerVerifier::builder_with_provider(
             Arc::new(root_store),
-            Arc::new(provider::default_provider()),
+            Arc::new(provider.clone()),
         )
         .build()
         .unwrap();
 
         let cas_sending_server_verifier = Arc::new(ServerCertVerifierWithCasExt {
             verifier: server_verifier.clone(),
-            ca_names: vec![DistinguishedName::from(
+            ca_names: Arc::from(vec![DistinguishedName::from(
                 key_type
                     .ca_distinguished_name()
                     .to_vec(),
-            )],
+            )]),
         });
 
-        let cas_sending_client_config = client_config_builder()
+        let cas_sending_client_config = client_config_builder(&provider)
             .dangerous()
             .with_custom_certificate_verifier(cas_sending_server_verifier)
             .with_no_client_auth();
@@ -279,7 +230,7 @@ fn client_can_request_certain_trusted_cas() {
             make_pair_for_arc_configs(&Arc::new(cas_sending_client_config), &server_config);
         do_handshake(&mut client, &mut server);
 
-        let cas_unaware_client_config = client_config_builder()
+        let cas_unaware_client_config = client_config_builder(&provider)
             .dangerous()
             .with_custom_certificate_verifier(server_verifier)
             .with_no_client_auth();
@@ -310,9 +261,11 @@ fn client_can_request_certain_trusted_cas() {
 pub struct ResolvesCertChainByCaName(Vec<(DistinguishedName, Arc<CertifiedKey>)>);
 
 impl ResolvesServerCert for ResolvesCertChainByCaName {
-    fn resolve(&self, client_hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
+    fn resolve(&self, client_hello: &ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
         let Some(cas_extension) = client_hello.certificate_authorities() else {
-            println!("ResolvesCertChainByCaName: no CAs extension in ClientHello, returning default cert");
+            println!(
+                "ResolvesCertChainByCaName: no CAs extension in ClientHello, returning default cert"
+            );
             return Some(self.0[0].1.clone());
         };
         for (name, certified_key) in self.0.iter() {
@@ -334,7 +287,7 @@ impl ResolvesServerCert for ResolvesCertChainByCaName {
 #[derive(Debug)]
 struct ServerCertVerifierWithCasExt {
     verifier: Arc<dyn ServerCertVerifier>,
-    ca_names: Vec<DistinguishedName>,
+    ca_names: Arc<[DistinguishedName]>,
 }
 
 impl ServerCertVerifier for ServerCertVerifierWithCasExt {
@@ -374,12 +327,16 @@ impl ServerCertVerifier for ServerCertVerifierWithCasExt {
         self.verifier.supported_verify_schemes()
     }
 
+    fn request_ocsp_response(&self) -> bool {
+        self.verifier.request_ocsp_response()
+    }
+
     fn requires_raw_public_keys(&self) -> bool {
         self.verifier.requires_raw_public_keys()
     }
 
-    fn root_hint_subjects(&self) -> Option<&[DistinguishedName]> {
+    fn root_hint_subjects(&self) -> Option<Arc<[DistinguishedName]>> {
         println!("ServerCertVerifierWithCasExt::root_hint_subjects() called!");
-        Some(&self.ca_names)
+        Some(self.ca_names.clone())
     }
 }

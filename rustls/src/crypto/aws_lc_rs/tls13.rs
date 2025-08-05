@@ -5,8 +5,8 @@ use aws_lc_rs::{aead, hkdf, hmac};
 
 use crate::crypto;
 use crate::crypto::cipher::{
-    make_tls13_aad, AeadKey, InboundOpaqueMessage, Iv, MessageDecrypter, MessageEncrypter, Nonce,
-    Tls13AeadAlgorithm, UnsupportedOperationError,
+    AeadKey, InboundOpaqueMessage, Iv, MessageDecrypter, MessageEncrypter, Nonce,
+    Tls13AeadAlgorithm, UnsupportedOperationError, make_tls13_aad,
 };
 use crate::crypto::tls13::{Hkdf, HkdfExpander, OkmBlock, OutputLengthError};
 use crate::enums::{CipherSuite, ContentType, ProtocolVersion};
@@ -16,6 +16,7 @@ use crate::msgs::message::{
 };
 use crate::suites::{CipherSuiteCommon, ConnectionTrafficSecrets, SupportedCipherSuite};
 use crate::tls13::Tls13CipherSuite;
+use crate::version::TLS13_VERSION;
 
 /// The TLS1.3 ciphersuite TLS_CHACHA20_POLY1305_SHA256
 pub static TLS13_CHACHA20_POLY1305_SHA256: SupportedCipherSuite =
@@ -28,6 +29,7 @@ pub(crate) static TLS13_CHACHA20_POLY1305_SHA256_INTERNAL: &Tls13CipherSuite = &
         // ref: <https://www.ietf.org/archive/id/draft-irtf-cfrg-aead-limits-08.html#section-5.2.1>
         confidentiality_limit: u64::MAX,
     },
+    protocol_version: TLS13_VERSION,
     hkdf_provider: &AwsLcHkdf(hkdf::HKDF_SHA256, hmac::HMAC_SHA256),
     aead_alg: &Chacha20Poly1305Aead(AeadAlgorithm(&aead::CHACHA20_POLY1305)),
     quic: Some(&super::quic::KeyBuilder {
@@ -48,6 +50,7 @@ pub static TLS13_AES_256_GCM_SHA384: SupportedCipherSuite =
             hash_provider: &super::hash::SHA384,
             confidentiality_limit: 1 << 24,
         },
+        protocol_version: TLS13_VERSION,
         hkdf_provider: &AwsLcHkdf(hkdf::HKDF_SHA384, hmac::HMAC_SHA384),
         aead_alg: &Aes256GcmAead(AeadAlgorithm(&aead::AES_256_GCM)),
         quic: Some(&super::quic::KeyBuilder {
@@ -70,6 +73,7 @@ pub(crate) static TLS13_AES_128_GCM_SHA256_INTERNAL: &Tls13CipherSuite = &Tls13C
         hash_provider: &super::hash::SHA256,
         confidentiality_limit: 1 << 24,
     },
+    protocol_version: TLS13_VERSION,
     hkdf_provider: &AwsLcHkdf(hkdf::HKDF_SHA256, hmac::HMAC_SHA256),
     aead_alg: &Aes128GcmAead(AeadAlgorithm(&aead::AES_128_GCM)),
     quic: Some(&super::quic::KeyBuilder {
@@ -88,9 +92,7 @@ impl Tls13AeadAlgorithm for Chacha20Poly1305Aead {
     fn encrypter(&self, key: AeadKey, iv: Iv) -> Box<dyn MessageEncrypter> {
         // safety: the caller arranges that `key` is `key_len()` in bytes, so this unwrap is safe.
         Box::new(AeadMessageEncrypter {
-            enc_key: aead::LessSafeKey::new(
-                aead::UnboundKey::new(self.0 .0, key.as_ref()).unwrap(),
-            ),
+            enc_key: aead::LessSafeKey::new(aead::UnboundKey::new(self.0.0, key.as_ref()).unwrap()),
             iv,
         })
     }
@@ -98,9 +100,7 @@ impl Tls13AeadAlgorithm for Chacha20Poly1305Aead {
     fn decrypter(&self, key: AeadKey, iv: Iv) -> Box<dyn MessageDecrypter> {
         // safety: the caller arranges that `key` is `key_len()` in bytes, so this unwrap is safe.
         Box::new(AeadMessageDecrypter {
-            dec_key: aead::LessSafeKey::new(
-                aead::UnboundKey::new(self.0 .0, key.as_ref()).unwrap(),
-            ),
+            dec_key: aead::LessSafeKey::new(aead::UnboundKey::new(self.0.0, key.as_ref()).unwrap()),
             iv,
         })
     }

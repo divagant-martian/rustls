@@ -3,7 +3,9 @@ use alloc::vec::Vec;
 use pki_types::{CertificateDer, CertificateRevocationListDer, UnixTime};
 use webpki::{CertRevocationList, ExpirationPolicy, RevocationCheckDepth, UnknownStatusPolicy};
 
-use super::{pki_error, VerifierBuilderError};
+use super::{VerifierBuilderError, pki_error};
+#[cfg(doc)]
+use crate::ConfigBuilder;
 #[cfg(doc)]
 use crate::crypto;
 use crate::crypto::{CryptoProvider, WebPkiSupportedAlgorithms};
@@ -15,9 +17,7 @@ use crate::verify::{
     NoClientAuth,
 };
 use crate::webpki::parse_crls;
-use crate::webpki::verify::{verify_tls12_signature, verify_tls13_signature, ParsedCertificate};
-#[cfg(doc)]
-use crate::ConfigBuilder;
+use crate::webpki::verify::{ParsedCertificate, verify_tls12_signature, verify_tls13_signature};
 use crate::{DistinguishedName, Error, RootCertStore, SignatureScheme};
 
 /// A builder for configuring a `webpki` client certificate verifier.
@@ -176,7 +176,7 @@ impl ClientCertVerifierBuilder {
 
         Ok(Arc::new(WebPkiClientVerifier::new(
             self.roots,
-            self.root_hint_subjects,
+            Arc::from(self.root_hint_subjects),
             parse_crls(self.crls)?,
             self.revocation_check_depth,
             self.unknown_revocation_policy,
@@ -200,7 +200,7 @@ impl ClientCertVerifierBuilder {
 ///
 /// To require all clients present a client certificate issued by a trusted CA:
 /// ```no_run
-/// # #[cfg(any(feature = "ring", feature = "aws_lc_rs"))] {
+/// # #[cfg(any(feature = "ring", feature = "aws-lc-rs"))] {
 /// # use rustls::RootCertStore;
 /// # use rustls::server::WebPkiClientVerifier;
 /// # let roots = RootCertStore::empty();
@@ -213,7 +213,7 @@ impl ClientCertVerifierBuilder {
 /// Or, to allow clients presenting a client certificate authenticated by a trusted CA, or
 /// anonymous clients that present no client certificate:
 /// ```no_run
-/// # #[cfg(any(feature = "ring", feature = "aws_lc_rs"))] {
+/// # #[cfg(any(feature = "ring", feature = "aws-lc-rs"))] {
 /// # use rustls::RootCertStore;
 /// # use rustls::server::WebPkiClientVerifier;
 /// # let roots = RootCertStore::empty();
@@ -235,7 +235,7 @@ impl ClientCertVerifierBuilder {
 /// You can also configure the client verifier to check for certificate revocation with
 /// client certificate revocation lists (CRLs):
 /// ```no_run
-/// # #[cfg(any(feature = "ring", feature = "aws_lc_rs"))] {
+/// # #[cfg(any(feature = "ring", feature = "aws-lc-rs"))] {
 /// # use rustls::RootCertStore;
 /// # use rustls::server::{WebPkiClientVerifier};
 /// # let roots = RootCertStore::empty();
@@ -251,7 +251,7 @@ impl ClientCertVerifierBuilder {
 #[derive(Debug)]
 pub struct WebPkiClientVerifier {
     roots: Arc<RootCertStore>,
-    root_hint_subjects: Vec<DistinguishedName>,
+    root_hint_subjects: Arc<[DistinguishedName]>,
     crls: Vec<CertRevocationList<'static>>,
     revocation_check_depth: RevocationCheckDepth,
     unknown_revocation_policy: UnknownStatusPolicy,
@@ -274,7 +274,7 @@ impl WebPkiClientVerifier {
     pub fn builder(roots: Arc<RootCertStore>) -> ClientCertVerifierBuilder {
         Self::builder_with_provider(
             roots,
-            Arc::clone(CryptoProvider::get_default_or_install_from_crate_features()),
+            CryptoProvider::get_default_or_install_from_crate_features().clone(),
         )
     }
 
@@ -320,7 +320,7 @@ impl WebPkiClientVerifier {
     /// * `supported_algs` specifies which signature verification algorithms should be used.
     pub(crate) fn new(
         roots: Arc<RootCertStore>,
-        root_hint_subjects: Vec<DistinguishedName>,
+        root_hint_subjects: Arc<[DistinguishedName]>,
         crls: Vec<CertRevocationList<'static>>,
         revocation_check_depth: RevocationCheckDepth,
         unknown_revocation_policy: UnknownStatusPolicy,
@@ -353,8 +353,8 @@ impl ClientCertVerifier for WebPkiClientVerifier {
         }
     }
 
-    fn root_hint_subjects(&self) -> &[DistinguishedName] {
-        &self.root_hint_subjects
+    fn root_hint_subjects(&self) -> Arc<[DistinguishedName]> {
+        self.root_hint_subjects.clone()
     }
 
     fn verify_client_cert(
@@ -437,10 +437,10 @@ mod tests {
     use pki_types::pem::PemObject;
     use pki_types::{CertificateDer, CertificateRevocationListDer};
 
-    use super::{provider, WebPkiClientVerifier};
+    use super::{WebPkiClientVerifier, provider};
+    use crate::RootCertStore;
     use crate::server::VerifierBuilderError;
     use crate::sync::Arc;
-    use crate::RootCertStore;
 
     fn load_crls(crls_der: &[&[u8]]) -> Vec<CertificateRevocationListDer<'static>> {
         crls_der
@@ -488,7 +488,7 @@ mod tests {
             provider::default_provider().into(),
         );
         // The builder should be Debug.
-        println!("{:?}", builder);
+        println!("{builder:?}");
         builder.build().unwrap();
     }
 
@@ -502,7 +502,7 @@ mod tests {
         )
         .allow_unauthenticated();
         // The builder should be Debug.
-        println!("{:?}", builder);
+        println!("{builder:?}");
         builder.build().unwrap();
     }
 
@@ -516,7 +516,7 @@ mod tests {
             provider::default_provider().into(),
         );
         // The builder should be Debug.
-        println!("{:?}", builder);
+        println!("{builder:?}");
         builder.build().unwrap();
     }
 
@@ -530,7 +530,7 @@ mod tests {
         )
         .allow_unauthenticated();
         // The builder should be Debug.
-        println!("{:?}", builder);
+        println!("{builder:?}");
         builder.build().unwrap();
     }
 
@@ -564,7 +564,7 @@ mod tests {
         // There should be the expected number of crls.
         assert_eq!(builder.crls.len(), initial_crls.len() + extra_crls.len());
         // The builder should be Debug.
-        println!("{:?}", builder);
+        println!("{builder:?}");
         builder.build().unwrap();
     }
 
@@ -578,7 +578,7 @@ mod tests {
         )
         .with_crls(test_crls());
         // The builder should be Debug.
-        println!("{:?}", builder);
+        println!("{builder:?}");
         builder.build().unwrap();
     }
 
@@ -593,7 +593,7 @@ mod tests {
         .with_crls(test_crls())
         .allow_unauthenticated();
         // The builder should be Debug.
-        println!("{:?}", builder);
+        println!("{builder:?}");
         builder.build().unwrap();
     }
 
@@ -607,7 +607,7 @@ mod tests {
         .with_crls(test_crls())
         .only_check_end_entity_revocation();
         // The builder should be Debug.
-        println!("{:?}", builder);
+        println!("{builder:?}");
         builder.build().unwrap();
     }
 
@@ -621,7 +621,7 @@ mod tests {
         .with_crls(test_crls())
         .allow_unknown_revocation_status();
         // The builder should be Debug.
-        println!("{:?}", builder);
+        println!("{builder:?}");
         builder.build().unwrap();
     }
 
@@ -635,7 +635,7 @@ mod tests {
         .with_crls(test_crls())
         .enforce_revocation_expiration();
         // The builder should be Debug.
-        println!("{:?}", builder);
+        println!("{builder:?}");
         builder.build().unwrap();
     }
 
@@ -658,8 +658,8 @@ mod tests {
         ];
 
         for err in all {
-            let _ = format!("{:?}", err);
-            let _ = format!("{}", err);
+            let _ = format!("{err:?}");
+            let _ = format!("{err}");
         }
     }
 }

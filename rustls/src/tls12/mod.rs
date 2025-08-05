@@ -15,11 +15,25 @@ use crate::error::{Error, InvalidMessage};
 use crate::msgs::codec::{Codec, Reader};
 use crate::msgs::handshake::{KeyExchangeAlgorithm, KxDecode};
 use crate::suites::{CipherSuiteCommon, PartiallyExtractedSecrets, SupportedCipherSuite};
+use crate::version::Tls12Version;
 
 /// A TLS 1.2 cipher suite supported by rustls.
+#[allow(clippy::exhaustive_structs)]
 pub struct Tls12CipherSuite {
     /// Common cipher suite fields.
     pub common: CipherSuiteCommon,
+
+    /// The associated protocol version.
+    ///
+    /// This field should have the value [`rustls::version::TLS12_VERSION`].
+    ///
+    /// This value contains references to the TLS1.2 protocol handling code.
+    /// This means that a program that does not contain any `Tls12CipherSuite`
+    /// values also does not contain any reference to the TLS1.2 protocol handling
+    /// code, and the linker can remove it.
+    ///
+    /// [`rustls::version::TLS12_VERSION`]: crate::version::TLS12_VERSION
+    pub protocol_version: &'static Tls12Version,
 
     /// How to compute the TLS1.2 PRF for the suite's hash function.
     ///
@@ -95,7 +109,8 @@ impl fmt::Debug for Tls12CipherSuite {
 pub(crate) struct ConnectionSecrets {
     pub(crate) randoms: ConnectionRandoms,
     suite: &'static Tls12CipherSuite,
-    pub(crate) master_secret: [u8; 48],
+    master_secret: [u8; 48],
+    master_secret_prf: Box<dyn crypto::tls12::PrfSecret>,
 }
 
 impl ConnectionSecrets {
@@ -106,17 +121,11 @@ impl ConnectionSecrets {
         randoms: ConnectionRandoms,
         suite: &'static Tls12CipherSuite,
     ) -> Result<Self, Error> {
-        let mut ret = Self {
-            randoms,
-            suite,
-            master_secret: [0u8; 48],
-        };
-
         let (label, seed) = match ems_seed {
             Some(seed) => ("extended master secret", Seed::Ems(seed)),
             None => (
                 "master secret",
-                Seed::Randoms(join_randoms(&ret.randoms.client, &ret.randoms.server)),
+                Seed::Randoms(join_randoms(&randoms.client, &randoms.server)),
             ),
         };
 
@@ -124,32 +133,40 @@ impl ConnectionSecrets {
         // slice parameters are non-empty.
         // `label` is guaranteed non-empty because it's assigned from a `&str` above.
         // `seed.as_ref()` is guaranteed non-empty by documentation on the AsRef impl.
-        ret.suite
-            .prf_provider
-            .for_key_exchange(
-                &mut ret.master_secret,
-                kx,
-                peer_pub_key,
-                label.as_bytes(),
-                seed.as_ref(),
-            )?;
+        let mut master_secret = [0u8; 48];
+        suite.prf_provider.for_key_exchange(
+            &mut master_secret,
+            kx,
+            peer_pub_key,
+            label.as_bytes(),
+            seed.as_ref(),
+        )?;
 
-        Ok(ret)
+        let master_secret_prf = suite
+            .prf_provider
+            .new_secret(&master_secret);
+
+        Ok(Self {
+            randoms,
+            suite,
+            master_secret,
+            master_secret_prf,
+        })
     }
 
     pub(crate) fn new_resume(
         randoms: ConnectionRandoms,
         suite: &'static Tls12CipherSuite,
-        master_secret: &[u8],
+        master_secret: &[u8; 48],
     ) -> Self {
-        let mut ret = Self {
+        Self {
             randoms,
             suite,
-            master_secret: [0u8; 48],
-        };
-        ret.master_secret
-            .copy_from_slice(master_secret);
-        ret
+            master_secret: *master_secret,
+            master_secret_prf: suite
+                .prf_provider
+                .new_secret(master_secret),
+        }
     }
 
     /// Make a `MessageCipherPair` based on the given supported ciphersuite `self.suite`,
@@ -200,12 +217,8 @@ impl ConnectionSecrets {
         // NOTE: opposite order to above for no good reason.
         // Don't design security protocols on drugs, kids.
         let randoms = join_randoms(&self.randoms.server, &self.randoms.client);
-        self.suite.prf_provider.for_secret(
-            &mut out,
-            &self.master_secret,
-            b"key expansion",
-            &randoms,
-        );
+        self.master_secret_prf
+            .prf(&mut out, b"key expansion", &randoms);
 
         out
     }
@@ -214,20 +227,14 @@ impl ConnectionSecrets {
         self.suite
     }
 
-    pub(crate) fn master_secret(&self) -> &[u8] {
-        &self.master_secret[..]
+    pub(crate) fn master_secret(&self) -> &[u8; 48] {
+        &self.master_secret
     }
 
     fn make_verify_data(&self, handshake_hash: &hash::Output, label: &[u8]) -> Vec<u8> {
         let mut out = vec![0u8; 12];
-
-        self.suite.prf_provider.for_secret(
-            &mut out,
-            &self.master_secret,
-            label,
-            handshake_hash.as_ref(),
-        );
-
+        self.master_secret_prf
+            .prf(&mut out, label, handshake_hash.as_ref());
         out
     }
 
@@ -254,9 +261,8 @@ impl ConnectionSecrets {
             randoms.extend_from_slice(context);
         }
 
-        self.suite
-            .prf_provider
-            .for_secret(output, &self.master_secret, label, &randoms);
+        self.master_secret_prf
+            .prf(output, label, &randoms);
     }
 
     pub(crate) fn extract_secrets(&self, side: Side) -> Result<PartiallyExtractedSecrets, Error> {
@@ -355,22 +361,26 @@ mod tests {
         server_buf.push(34);
 
         let mut common = CommonState::new(Side::Client);
-        assert!(decode_kx_params::<ServerKeyExchangeParams>(
-            KeyExchangeAlgorithm::ECDHE,
-            &mut common,
-            &server_buf
-        )
-        .is_err());
+        assert!(
+            decode_kx_params::<ServerKeyExchangeParams>(
+                KeyExchangeAlgorithm::ECDHE,
+                &mut common,
+                &server_buf
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn client_ecdhe_invalid() {
         let mut common = CommonState::new(Side::Server);
-        assert!(decode_kx_params::<ServerKeyExchangeParams>(
-            KeyExchangeAlgorithm::ECDHE,
-            &mut common,
-            &[34],
-        )
-        .is_err());
+        assert!(
+            decode_kx_params::<ServerKeyExchangeParams>(
+                KeyExchangeAlgorithm::ECDHE,
+                &mut common,
+                &[34],
+            )
+            .is_err()
+        );
     }
 }

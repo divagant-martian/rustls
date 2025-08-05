@@ -9,10 +9,10 @@ mod client {
     use std::net::TcpStream;
     use std::sync::Arc;
 
-    use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
     use rustls::client::AlwaysResolvesClientRawPublicKeys;
+    use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
     use rustls::crypto::{
-        aws_lc_rs as provider, verify_tls13_signature_with_raw_key, WebPkiSupportedAlgorithms,
+        WebPkiSupportedAlgorithms, aws_lc_rs as provider, verify_tls13_signature_with_raw_key,
     };
     use rustls::pki_types::pem::PemObject;
     use rustls::pki_types::{
@@ -43,7 +43,7 @@ mod client {
         let server_raw_key = SubjectPublicKeyInfoDer::from_pem_file(server_pub_key)
             .expect("cannot open pub key file");
 
-        let certified_key = Arc::new(CertifiedKey::new(
+        let certified_key = Arc::new(CertifiedKey::new_unchecked(
             vec![client_public_key_as_cert],
             client_private_key,
         ));
@@ -64,7 +64,7 @@ mod client {
     pub(super) fn run_client(config: ClientConfig, port: u16) -> Result<String, io::Error> {
         let server_name = "0.0.0.0".try_into().unwrap();
         let mut conn = ClientConnection::new(Arc::new(config), server_name).unwrap();
-        let mut sock = TcpStream::connect(format!("[::]:{}", port)).unwrap();
+        let mut sock = TcpStream::connect(format!("[::]:{port}")).unwrap();
         let mut tls = Stream::new(&mut conn, &mut sock);
 
         let mut buf = vec![0; 128];
@@ -90,11 +90,9 @@ mod client {
 
     impl SimpleRpkServerCertVerifier {
         fn new(trusted_spki: Vec<SubjectPublicKeyInfoDer<'static>>) -> Self {
-            SimpleRpkServerCertVerifier {
+            Self {
                 trusted_spki,
-                supported_algs: Arc::new(provider::default_provider())
-                    .clone()
-                    .signature_verification_algorithms,
+                supported_algs: provider::default_provider().signature_verification_algorithms,
             }
         }
     }
@@ -107,15 +105,13 @@ mod client {
             _server_name: &ServerName<'_>,
             _ocsp_response: &[u8],
             _now: UnixTime,
-        ) -> Result<ServerCertVerified, rustls::Error> {
+        ) -> Result<ServerCertVerified, Error> {
             let end_entity_as_spki = SubjectPublicKeyInfoDer::from(end_entity.as_ref());
             match self
                 .trusted_spki
                 .contains(&end_entity_as_spki)
             {
-                false => Err(rustls::Error::InvalidCertificate(
-                    CertificateError::UnknownIssuer,
-                )),
+                false => Err(Error::InvalidCertificate(CertificateError::UnknownIssuer)),
                 true => Ok(ServerCertVerified::assertion()),
             }
         }
@@ -125,10 +121,8 @@ mod client {
             _message: &[u8],
             _cert: &CertificateDer<'_>,
             _dss: &DigitallySignedStruct,
-        ) -> Result<HandshakeSignatureValid, rustls::Error> {
-            Err(rustls::Error::PeerIncompatible(
-                PeerIncompatible::Tls12NotOffered,
-            ))
+        ) -> Result<HandshakeSignatureValid, Error> {
+            Err(Error::PeerIncompatible(PeerIncompatible::Tls12NotOffered))
         }
 
         fn verify_tls13_signature(
@@ -136,7 +130,7 @@ mod client {
             message: &[u8],
             cert: &CertificateDer<'_>,
             dss: &DigitallySignedStruct,
-        ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        ) -> Result<HandshakeSignatureValid, Error> {
             verify_tls13_signature_with_raw_key(
                 message,
                 &SubjectPublicKeyInfoDer::from(cert.as_ref()),
@@ -147,6 +141,10 @@ mod client {
 
         fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
             self.supported_algs.supported_schemes()
+        }
+
+        fn request_ocsp_response(&self) -> bool {
+            false
         }
 
         fn requires_raw_public_keys(&self) -> bool {
@@ -162,12 +160,12 @@ mod server {
 
     use rustls::client::danger::HandshakeSignatureValid;
     use rustls::crypto::{
-        aws_lc_rs as provider, verify_tls13_signature_with_raw_key, WebPkiSupportedAlgorithms,
+        WebPkiSupportedAlgorithms, aws_lc_rs as provider, verify_tls13_signature_with_raw_key,
     };
     use rustls::pki_types::pem::PemObject;
     use rustls::pki_types::{CertificateDer, PrivateKeyDer, SubjectPublicKeyInfoDer, UnixTime};
-    use rustls::server::danger::{ClientCertVerified, ClientCertVerifier};
     use rustls::server::AlwaysResolvesServerRawPublicKeys;
+    use rustls::server::danger::{ClientCertVerified, ClientCertVerifier};
     use rustls::sign::CertifiedKey;
     use rustls::version::TLS13;
     use rustls::{
@@ -193,7 +191,7 @@ mod server {
             .expect("cannot load public key");
         let server_public_key_as_cert = CertificateDer::from(server_public_key.to_vec());
 
-        let certified_key = Arc::new(CertifiedKey::new(
+        let certified_key = Arc::new(CertifiedKey::new_unchecked(
             vec![server_public_key_as_cert],
             server_private_key,
         ));
@@ -254,19 +252,17 @@ mod server {
     }
 
     impl SimpleRpkClientCertVerifier {
-        pub fn new(trusted_spki: Vec<SubjectPublicKeyInfoDer<'static>>) -> Self {
+        pub(crate) fn new(trusted_spki: Vec<SubjectPublicKeyInfoDer<'static>>) -> Self {
             Self {
                 trusted_spki,
-                supported_algs: Arc::new(provider::default_provider())
-                    .clone()
-                    .signature_verification_algorithms,
+                supported_algs: provider::default_provider().signature_verification_algorithms,
             }
         }
     }
 
     impl ClientCertVerifier for SimpleRpkClientCertVerifier {
-        fn root_hint_subjects(&self) -> &[DistinguishedName] {
-            &[]
+        fn root_hint_subjects(&self) -> Arc<[DistinguishedName]> {
+            Arc::from(Vec::new())
         }
 
         fn verify_client_cert(
@@ -274,15 +270,13 @@ mod server {
             end_entity: &CertificateDer<'_>,
             _intermediates: &[CertificateDer<'_>],
             _now: UnixTime,
-        ) -> Result<ClientCertVerified, rustls::Error> {
+        ) -> Result<ClientCertVerified, Error> {
             let end_entity_as_spki = SubjectPublicKeyInfoDer::from(end_entity.as_ref());
             match self
                 .trusted_spki
                 .contains(&end_entity_as_spki)
             {
-                false => Err(rustls::Error::InvalidCertificate(
-                    CertificateError::UnknownIssuer,
-                )),
+                false => Err(Error::InvalidCertificate(CertificateError::UnknownIssuer)),
                 true => Ok(ClientCertVerified::assertion()),
             }
         }
@@ -292,10 +286,8 @@ mod server {
             _message: &[u8],
             _cert: &CertificateDer<'_>,
             _dss: &DigitallySignedStruct,
-        ) -> Result<HandshakeSignatureValid, rustls::Error> {
-            Err(rustls::Error::PeerIncompatible(
-                PeerIncompatible::Tls12NotOffered,
-            ))
+        ) -> Result<HandshakeSignatureValid, Error> {
+            Err(Error::PeerIncompatible(PeerIncompatible::Tls12NotOffered))
         }
 
         fn verify_tls13_signature(
@@ -303,7 +295,7 @@ mod server {
             message: &[u8],
             cert: &CertificateDer<'_>,
             dss: &DigitallySignedStruct,
-        ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        ) -> Result<HandshakeSignatureValid, Error> {
             verify_tls13_signature_with_raw_key(
                 message,
                 &SubjectPublicKeyInfoDer::from(cert.as_ref()),
@@ -328,6 +320,9 @@ mod tests {
     use std::process::{Command, Stdio};
     use std::sync::mpsc::channel;
     use std::thread;
+
+    use rustls::pki_types::pem::PemObject;
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
     use super::{client, server};
     use crate::utils::verify_openssl3_available;
@@ -365,7 +360,7 @@ mod tests {
                 assert_eq!(server_message, "Hello from the server");
             }
             Err(e) => {
-                panic!("Client failed to communicate with the server: {:?}", e);
+                panic!("Client failed to communicate with the server: {e:?}");
             }
         }
 
@@ -380,9 +375,59 @@ mod tests {
                 assert_eq!(client_message, "Hello from the client");
             }
             Err(e) => {
-                panic!("Server failed to communicate with the client: {:?}", e);
+                panic!("Server failed to communicate with the client: {e:?}");
             }
         }
+    }
+
+    #[test]
+    fn test_rust_x509_server_with_openssl_raw_key_and_x509_client() {
+        verify_openssl3_available();
+
+        let listener = tcp_listener();
+        let port = listener.local_addr().unwrap().port();
+
+        let cert_file = SERVER_CERT_KEY_FILE;
+        let private_key_file = SERVER_PRIV_KEY_FILE;
+
+        let certs = CertificateDer::pem_file_iter(cert_file)
+            .unwrap()
+            .map(|cert| cert.unwrap())
+            .collect();
+        let private_key = PrivateKeyDer::from_pem_file(private_key_file).unwrap();
+        let config = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(certs, private_key)
+            .unwrap();
+        let server_thread = thread::spawn(move || {
+            server::run_server(config, listener).expect("failed to run server to completion")
+        });
+
+        // Start the OpenSSL client
+        let mut openssl_client = Command::new("openssl")
+            .arg("s_client")
+            .arg("-connect")
+            .arg(format!("[::]:{port:?}"))
+            .arg("-enable_client_rpk")
+            .arg("-key")
+            .arg(CLIENT_PRIV_KEY_FILE)
+            .arg("-cert")
+            .arg(CLIENT_CERT_KEY_FILE)
+            .arg("-tls1_3")
+            .arg("-debug")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("Failed to execute OpenSSL client");
+
+        let stdin = openssl_client.stdin.take().unwrap();
+        let stdout = openssl_client.stdout.take().unwrap();
+        let received_server_msg =
+            process_openssl_client_interaction(stdin, stdout, "Hello, from openssl client!");
+
+        assert!(received_server_msg);
+        assert_eq!(server_thread.join().unwrap(), "Hello, from openssl client!");
+        openssl_client.wait().unwrap();
     }
 
     #[test]
@@ -404,7 +449,7 @@ mod tests {
         let mut openssl_client = Command::new("openssl")
             .arg("s_client")
             .arg("-connect")
-            .arg(format!("[::]:{:?}", port))
+            .arg(format!("[::]:{port:?}"))
             .arg("-enable_server_rpk")
             .arg("-enable_client_rpk")
             .arg("-key")
@@ -418,36 +463,46 @@ mod tests {
             .spawn()
             .expect("Failed to execute OpenSSL client");
 
-        let mut stdin = openssl_client.stdin.take().unwrap();
-        let mut stdout = openssl_client.stdout.take().unwrap();
-        let mut stdout_buf = [0; 1024];
-        let mut openssl_stdout = String::new();
-        let mut received_server_msg = false;
-        loop {
-            match stdout.read(&mut stdout_buf) {
-                Ok(0) => break,
-                Ok(len) => {
-                    let read = &stdout_buf[..len];
-
-                    std::io::stdout()
-                        .write_all(read)
-                        .unwrap();
-                    openssl_stdout.push_str(&String::from_utf8_lossy(read));
-                    if openssl_stdout.contains("Hello from the server") {
-                        received_server_msg = true;
-                        stdin
-                            .write_all(b"Hello, from openssl client!")
-                            .expect("Failed to write to stdin");
-                        break;
-                    }
-                }
-                Err(e) => panic!("Error reading from OpenSSL stdin: {e:?}"),
-            }
-        }
+        let stdin = openssl_client.stdin.take().unwrap();
+        let stdout = openssl_client.stdout.take().unwrap();
+        let received_server_msg =
+            process_openssl_client_interaction(stdin, stdout, "Hello, from openssl client!");
 
         assert!(received_server_msg);
         assert_eq!(server_thread.join().unwrap(), "Hello, from openssl client!");
         openssl_client.wait().unwrap();
+    }
+
+    fn process_openssl_client_interaction(
+        mut stdin: std::process::ChildStdin,
+        mut stdout: std::process::ChildStdout,
+        message: &str,
+    ) -> bool {
+        let mut stdout_buf = [0; 1024];
+        let mut openssl_stdout = String::new();
+
+        loop {
+            let len = match stdout.read(&mut stdout_buf) {
+                Ok(0) => break,
+                Ok(len) => len,
+                Err(e) => panic!("Error reading from OpenSSL stdin: {e:?}"),
+            };
+
+            let read = &stdout_buf[..len];
+            std::io::stdout()
+                .write_all(read)
+                .unwrap();
+            openssl_stdout.push_str(&String::from_utf8_lossy(read));
+
+            if openssl_stdout.contains("Hello from the server") {
+                stdin
+                    .write_all(message.as_bytes())
+                    .expect("Failed to write to stdin");
+                return true;
+            }
+        }
+
+        false
     }
 
     #[test]
@@ -489,7 +544,7 @@ mod tests {
                         }
                     }
                     Err(e) => {
-                        panic!("Error reading from OpenSSL stdout: {:?}", e);
+                        panic!("Error reading from OpenSSL stdout: {e:?}");
                     }
                 }
             }

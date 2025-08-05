@@ -8,6 +8,7 @@ use crate::error::{Error, InvalidMessage};
 use crate::msgs::base::PayloadU16;
 use crate::msgs::codec::{Codec, Reader};
 use crate::msgs::handshake::DistinguishedName;
+use crate::sync::Arc;
 
 // Marker types.  These are used to bind the fact some verification
 // (certificate chain or handshake signature) has taken place into
@@ -74,11 +75,15 @@ pub trait ServerCertVerifier: Debug + Send + Sync {
     /// were sent as part of the server's [Certificate] message. It is in the
     /// same order that the server sent them and may be empty.
     ///
+    /// `ocsp_response` is empty if no OCSP response was received, and that also
+    /// covers the case where `request_ocsp_response()` returns false.
+    ///
     /// Note that none of the certificates have been parsed yet, so it is the responsibility of
     /// the implementer to handle invalid data. It is recommended that the implementer returns
-    /// [`Error::InvalidCertificate(CertificateError::BadEncoding)`] when these cases are encountered.
+    /// [`Error::InvalidCertificate`] containing [`CertificateError::BadEncoding`] when these cases are encountered.
     ///
     /// [Certificate]: https://datatracker.ietf.org/doc/html/rfc8446#section-4.4.2
+    /// [`CertificateError::BadEncoding`]: crate::error::CertificateError::BadEncoding
     fn verify_server_cert(
         &self,
         end_entity: &CertificateDer<'_>,
@@ -137,6 +142,12 @@ pub trait ServerCertVerifier: Debug + Send + Sync {
     /// This should be in priority order, with the most preferred first.
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme>;
 
+    /// Return true if this verifier will process stapled OCSP responses.
+    ///
+    /// This controls whether a client will ask the server for a stapled OCSP response.
+    /// There is no guarantee the server will provide one.
+    fn request_ocsp_response(&self) -> bool;
+
     /// Returns whether this verifier requires raw public keys as defined
     /// in [RFC 7250](https://tools.ietf.org/html/rfc7250).
     fn requires_raw_public_keys(&self) -> bool {
@@ -149,7 +160,7 @@ pub trait ServerCertVerifier: Debug + Send + Sync {
     /// Note that this is only applicable to TLS 1.3.
     ///
     /// [`certificate_authorities`]: https://datatracker.ietf.org/doc/html/rfc8446#section-4.2.4
-    fn root_hint_subjects(&self) -> Option<&[DistinguishedName]> {
+    fn root_hint_subjects(&self) -> Option<Arc<[DistinguishedName]>> {
         None
     }
 }
@@ -199,7 +210,7 @@ pub trait ClientCertVerifier: Debug + Send + Sync {
     /// [RFC 5280 A.1]: https://www.rfc-editor.org/rfc/rfc5280#appendix-A.1
     /// [`CertificateRequest`]: https://datatracker.ietf.org/doc/html/rfc8446#section-4.3.2
     /// [`certificate_authorities`]: https://datatracker.ietf.org/doc/html/rfc8446#section-4.2.4
-    fn root_hint_subjects(&self) -> &[DistinguishedName];
+    fn root_hint_subjects(&self) -> Arc<[DistinguishedName]>;
 
     /// Verify the end-entity certificate `end_entity` is valid, acceptable,
     /// and chains to at least one of the trust anchors trusted by
@@ -279,6 +290,7 @@ pub trait ClientCertVerifier: Debug + Send + Sync {
 /// `WebPkiClientVerifier::builder(roots).allow_unauthenticated().build()`, the `NoClientAuth`
 /// `ClientCertVerifier` will not offer client authentication at all, vs offering but not
 /// requiring it.
+#[allow(clippy::exhaustive_structs)]
 #[derive(Debug)]
 pub struct NoClientAuth;
 
@@ -287,7 +299,7 @@ impl ClientCertVerifier for NoClientAuth {
         false
     }
 
-    fn root_hint_subjects(&self) -> &[DistinguishedName] {
+    fn root_hint_subjects(&self) -> Arc<[DistinguishedName]> {
         unimplemented!();
     }
 

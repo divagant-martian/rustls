@@ -46,7 +46,7 @@ jobs:
 
       - name: Install ninja-build tool for aws-lc-fips-sys on Windows
         if: runner.os == 'Windows'
-        uses: seanmiddleditch/gha-setup-ninja@v5
+        uses: seanmiddleditch/gha-setup-ninja@v6
 
       - name: Build example programs
         run: cargo build --locked -p rustls-examples
@@ -90,7 +90,7 @@ jobs:
 
       - name: Install ninja-build tool for aws-lc-fips-sys on Windows
         if: runner.os == 'Windows'
-        uses: seanmiddleditch/gha-setup-ninja@v5
+        uses: seanmiddleditch/gha-setup-ninja@v6
 
       - name: Check simple client
         run: cargo run --locked -p rustls-examples --bin simpleclient
@@ -125,12 +125,19 @@ jobs:
           cargo run --locked -p rustls-examples --bin ech-client -- --host min-ng.test.defo.ie --path "echstat.php?format=json" public.test.defo.ie min-ng.test.defo.ie |
             grep '"SSL_ECH_STATUS": "success"'
 
+      - name: Check ech-client (tls-ech.dev)
+        run: >
+          cargo run --locked -p rustls-examples --bin ech-client -- --path "/" public.tls-ech.dev tls-ech.dev |
+            grep 'You are using ECH.'
+
       - name: Check provider-example client
         run: cargo run --locked -p rustls-provider-example --example client
 
       - name: Check rustls-post-quantum client
         run: cargo run --locked -p rustls-post-quantum --example client | grep 'kex=X25519MLKEM768'
 
+      - name: Smoke test for secp256r1mlkem768 interop
+        run: cargo run --locked -p rustls-examples --bin tlsclient-mio -- --http --key-exchange secp256r1mlkem768 --verbose openquantumsafe.org
 
   feature-powerset:
     name: Feature Powerset
@@ -153,10 +160,10 @@ jobs:
             --package rustls
             --feature-powerset
             --no-dev-deps
-            --group-features aws_lc_rs,aws-lc-rs
-            --group-features fips,aws_lc_rs
+            --group-features aws-lc-rs,aws-lc-rs
+            --group-features fips,aws-lc-rs
             --mutually-exclusive-features fips,ring
-            --mutually-exclusive-features custom_provider,aws_lc_rs
+            --mutually-exclusive-features custom_provider,aws-lc-rs
             --mutually-exclusive-features custom_provider,ring
         env:
           RUSTFLAGS: --deny warnings

@@ -2,11 +2,11 @@
 //! so that unused cryptography in rustls can be discarded by the linker.  You can
 //! observe using `nm` that the binary of this program does not contain any AES code.
 
-use std::io::{stdout, Read, Write};
+use std::io::{Read, Write, stdout};
 use std::net::TcpStream;
 use std::sync::Arc;
 
-use rustls::crypto::{aws_lc_rs as provider, CryptoProvider};
+use rustls::crypto::{CryptoProvider, aws_lc_rs as provider};
 
 fn main() {
     let root_store = rustls::RootCertStore::from_iter(
@@ -19,7 +19,9 @@ fn main() {
         CryptoProvider {
             cipher_suites: vec![provider::cipher_suite::TLS13_CHACHA20_POLY1305_SHA256],
             kx_groups: vec![provider::kx_group::X25519],
-            ..provider::default_provider()
+            signature_verification_algorithms: provider::SUPPORTED_SIG_ALGS,
+            secure_random: provider::DEFAULT_SECURE_RANDOM,
+            key_provider: provider::DEFAULT_KEY_PROVIDER,
         }
         .into(),
     )

@@ -2,11 +2,13 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::fmt::Debug;
 
-use pki_types::{AlgorithmIdentifier, CertificateDer, SubjectPublicKeyInfoDer};
+use pki_types::{AlgorithmIdentifier, CertificateDer, PrivateKeyDer, SubjectPublicKeyInfoDer};
 
+use super::CryptoProvider;
+use crate::client::ResolvesClientCert;
 use crate::enums::{SignatureAlgorithm, SignatureScheme};
 use crate::error::{Error, InconsistentKeys};
-use crate::server::ParsedCertificate;
+use crate::server::{ClientHello, ParsedCertificate, ResolvesServerCert};
 use crate::sync::Arc;
 use crate::x509;
 
@@ -61,11 +63,11 @@ pub trait SigningKey: Debug + Send + Sync {
     /// using the chosen scheme.
     fn choose_scheme(&self, offered: &[SignatureScheme]) -> Option<Box<dyn Signer>>;
 
-    /// Get the RFC 5280-compliant SubjectPublicKeyInfo (SPKI) of this [`SigningKey`] if available.
-    fn public_key(&self) -> Option<SubjectPublicKeyInfoDer<'_>> {
-        // Opt-out by default
-        None
-    }
+    /// Get the RFC 5280-compliant SubjectPublicKeyInfo (SPKI) of this [`SigningKey`].
+    ///
+    /// If an implementation does not have the ability to derive this,
+    /// it can return `None`.
+    fn public_key(&self) -> Option<SubjectPublicKeyInfoDer<'_>>;
 
     /// What kind of key we have.
     fn algorithm(&self) -> SignatureAlgorithm;
@@ -85,6 +87,46 @@ pub trait Signer: Debug + Send + Sync {
     fn scheme(&self) -> SignatureScheme;
 }
 
+/// Server certificate resolver which always resolves to the same certificate and key.
+///
+/// For use with [`ConfigBuilder::with_cert_resolver()`].
+///
+/// [`ConfigBuilder::with_cert_resolver()`]: crate::ConfigBuilder::with_cert_resolver
+#[derive(Debug)]
+pub struct SingleCertAndKey(Arc<CertifiedKey>);
+
+impl From<CertifiedKey> for SingleCertAndKey {
+    fn from(certified_key: CertifiedKey) -> Self {
+        Self(Arc::new(certified_key))
+    }
+}
+
+impl From<Arc<CertifiedKey>> for SingleCertAndKey {
+    fn from(certified_key: Arc<CertifiedKey>) -> Self {
+        Self(certified_key)
+    }
+}
+
+impl ResolvesClientCert for SingleCertAndKey {
+    fn resolve(
+        &self,
+        _root_hint_subjects: &[&[u8]],
+        _sigschemes: &[SignatureScheme],
+    ) -> Option<Arc<CertifiedKey>> {
+        Some(self.0.clone())
+    }
+
+    fn has_certs(&self) -> bool {
+        true
+    }
+}
+
+impl ResolvesServerCert for SingleCertAndKey {
+    fn resolve(&self, _client_hello: &ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
+        Some(self.0.clone())
+    }
+}
+
 /// A packaged-together certificate chain, matching `SigningKey` and
 /// optional stapled OCSP response.
 ///
@@ -93,10 +135,11 @@ pub trait Signer: Debug + Send + Sync {
 /// certificates.
 ///
 /// [RFC 7250]: https://tools.ietf.org/html/rfc7250
+#[non_exhaustive]
 #[derive(Clone, Debug)]
 pub struct CertifiedKey {
     /// The certificate chain or raw public key.
-    pub cert: Vec<CertificateDer<'static>>,
+    pub cert_chain: Vec<CertificateDer<'static>>,
 
     /// The certified key.
     pub key: Arc<dyn SigningKey>,
@@ -107,13 +150,72 @@ pub struct CertifiedKey {
 }
 
 impl CertifiedKey {
+    /// Create a new `CertifiedKey` from a certificate chain and DER-encoded private key.
+    ///
+    /// Attempt to parse the private key with the given [`CryptoProvider`]'s [`KeyProvider`] and
+    /// verify that it matches the public key in the first certificate of the `cert_chain`
+    /// if possible.
+    ///
+    /// [`KeyProvider`]: crate::crypto::KeyProvider
+    pub fn from_der(
+        cert_chain: Vec<CertificateDer<'static>>,
+        key: PrivateKeyDer<'static>,
+        provider: &CryptoProvider,
+    ) -> Result<Self, Error> {
+        Self::new(
+            cert_chain,
+            provider
+                .key_provider
+                .load_private_key(key)?,
+        )
+    }
+
     /// Make a new CertifiedKey, with the given chain and key.
     ///
     /// The cert chain must not be empty. The first certificate in the chain
-    /// must be the end-entity certificate.
-    pub fn new(cert: Vec<CertificateDer<'static>>, key: Arc<dyn SigningKey>) -> Self {
+    /// must be the end-entity certificate. The end-entity certificate's
+    /// subject public key info must match that of the `key`'s public key.
+    /// If the `key` does not have a public key, this will return an
+    /// `InconsistentKeys::Unknown` error.
+    ///
+    /// This constructor should be used with all [`SigningKey`] implementations
+    /// that can provide a public key, including those provided by rustls itself.
+    pub fn new(
+        cert_chain: Vec<CertificateDer<'static>>,
+        key: Arc<dyn SigningKey>,
+    ) -> Result<Self, Error> {
+        let parsed = ParsedCertificate::try_from(
+            cert_chain
+                .first()
+                .ok_or(Error::NoCertificatesPresented)?,
+        )?;
+
+        match (key.public_key(), parsed.subject_public_key_info()) {
+            (None, _) => Err(Error::InconsistentKeys(InconsistentKeys::Unknown)),
+            (Some(key_spki), cert_spki) if key_spki != cert_spki => {
+                Err(Error::InconsistentKeys(InconsistentKeys::KeyMismatch))
+            }
+            _ => Ok(Self {
+                cert_chain,
+                key,
+                ocsp: None,
+            }),
+        }
+    }
+
+    /// Make a new `CertifiedKey` from a raw private key.
+    ///
+    /// Unlike [`CertifiedKey::new()`], this does not check that the end-entity certificate's
+    /// subject key matches `key`'s public key.
+    ///
+    /// This avoids parsing the end-entity certificate, which is useful when using client
+    /// certificates that are not fully standards compliant, but known to usable by the peer.
+    pub fn new_unchecked(
+        cert_chain: Vec<CertificateDer<'static>>,
+        key: Arc<dyn SigningKey>,
+    ) -> Self {
         Self {
-            cert,
+            cert_chain,
             key,
             ocsp: None,
         }
@@ -135,13 +237,13 @@ impl CertifiedKey {
 
     /// The end-entity certificate.
     pub fn end_entity_cert(&self) -> Result<&CertificateDer<'_>, Error> {
-        self.cert
+        self.cert_chain
             .first()
             .ok_or(Error::NoCertificatesPresented)
     }
 }
 
-#[cfg_attr(not(any(feature = "aws_lc_rs", feature = "ring")), allow(dead_code))]
+#[cfg_attr(not(any(feature = "aws-lc-rs", feature = "ring")), allow(dead_code))]
 pub(crate) fn public_key_to_spki(
     alg_id: &AlgorithmIdentifier,
     public_key: impl AsRef<[u8]>,

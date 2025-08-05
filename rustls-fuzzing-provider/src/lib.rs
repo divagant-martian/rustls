@@ -1,33 +1,47 @@
+#![warn(
+    clippy::alloc_instead_of_core,
+    clippy::manual_let_else,
+    clippy::std_instead_of_core,
+    clippy::use_self,
+    clippy::upper_case_acronyms,
+    elided_lifetimes_in_paths,
+    trivial_casts,
+    trivial_numeric_casts,
+    unreachable_pub,
+    unused_import_braces,
+    unused_extern_crates,
+    unused_qualifications
+)]
+
 use std::sync::Arc;
 
-use rustls::client::danger::ServerCertVerifier;
 use rustls::client::WebPkiServerVerifier;
+use rustls::client::danger::ServerCertVerifier;
 use rustls::crypto::cipher::{
     AeadKey, InboundOpaqueMessage, InboundPlainMessage, Iv, KeyBlockShape, MessageDecrypter,
     MessageEncrypter, OutboundOpaqueMessage, OutboundPlainMessage, PrefixedPayload,
     Tls12AeadAlgorithm, Tls13AeadAlgorithm, UnsupportedOperationError,
 };
 use rustls::crypto::{
-    hash, tls12, tls13, CipherSuiteCommon, GetRandomFailed, KeyExchangeAlgorithm,
-    WebPkiSupportedAlgorithms,
+    CipherSuiteCommon, GetRandomFailed, KeyExchangeAlgorithm, WebPkiSupportedAlgorithms, hash,
+    tls12, tls13,
 };
-use rustls::ffdhe_groups::FfdheGroup;
 use rustls::pki_types::{
     AlgorithmIdentifier, CertificateDer, InvalidSignature, PrivateKeyDer,
-    SignatureVerificationAlgorithm,
+    SignatureVerificationAlgorithm, SubjectPublicKeyInfoDer, alg_id,
 };
+use rustls::server::ProducesTickets;
 use rustls::{
-    crypto, server, sign, CipherSuite, ConnectionTrafficSecrets, ContentType, Error, NamedGroup,
-    PeerMisbehaved, ProtocolVersion, RootCertStore, SignatureAlgorithm, SignatureScheme,
-    SupportedCipherSuite, Tls12CipherSuite, Tls13CipherSuite,
+    CipherSuite, ConnectionTrafficSecrets, ContentType, Error, NamedGroup, PeerMisbehaved,
+    ProtocolVersion, RootCertStore, SignatureAlgorithm, SignatureScheme, SupportedCipherSuite,
+    Tls12CipherSuite, Tls13CipherSuite, crypto, server, sign,
 };
-use webpki::alg_id;
 
 /// This is a `CryptoProvider` that provides NO SECURITY and is for fuzzing only.
 pub fn provider() -> crypto::CryptoProvider {
     crypto::CryptoProvider {
         cipher_suites: vec![TLS13_FUZZING_SUITE, TLS_FUZZING_SUITE],
-        kx_groups: vec![&KeyExchangeGroup as &dyn crypto::SupportedKxGroup],
+        kx_groups: vec![&KeyExchangeGroup],
         signature_verification_algorithms: VERIFY_ALGORITHMS,
         secure_random: &Provider,
         key_provider: &Provider,
@@ -48,7 +62,7 @@ pub fn server_verifier() -> Arc<dyn ServerCertVerifier> {
 
 pub fn server_cert_resolver() -> Arc<dyn server::ResolvesServerCert> {
     let cert = CertificateDer::from(&include_bytes!("../../test-ca/ecdsa-p256/end.der")[..]);
-    let certified_key = sign::CertifiedKey::new(vec![cert], Arc::new(SigningKey));
+    let certified_key = sign::CertifiedKey::new_unchecked(vec![cert], Arc::new(SigningKey));
     Arc::new(DummyCert(certified_key.into()))
 }
 
@@ -56,7 +70,7 @@ pub fn server_cert_resolver() -> Arc<dyn server::ResolvesServerCert> {
 struct DummyCert(Arc<sign::CertifiedKey>);
 
 impl server::ResolvesServerCert for DummyCert {
-    fn resolve(&self, _client_hello: server::ClientHello) -> Option<Arc<sign::CertifiedKey>> {
+    fn resolve(&self, _client_hello: &server::ClientHello<'_>) -> Option<Arc<sign::CertifiedKey>> {
         Some(self.0.clone())
     }
 }
@@ -87,28 +101,53 @@ impl crypto::KeyProvider for Provider {
     }
 }
 
-static TLS13_FUZZING_SUITE: SupportedCipherSuite = SupportedCipherSuite::Tls13(&Tls13CipherSuite {
-    common: CipherSuiteCommon {
-        suite: CipherSuite::Unknown(0xff13),
-        hash_provider: &Hash,
-        confidentiality_limit: u64::MAX,
-    },
-    hkdf_provider: &tls13::HkdfUsingHmac(&Hmac),
-    aead_alg: &Aead,
-    quic: None,
-});
+pub static TLS13_FUZZING_SUITE: SupportedCipherSuite =
+    SupportedCipherSuite::Tls13(&Tls13CipherSuite {
+        common: CipherSuiteCommon {
+            suite: CipherSuite::Unknown(0xff13),
+            hash_provider: &Hash,
+            confidentiality_limit: u64::MAX,
+        },
+        protocol_version: rustls::version::TLS13_VERSION,
+        hkdf_provider: &tls13::HkdfUsingHmac(&Hmac),
+        aead_alg: &Aead,
+        quic: None,
+    });
 
-static TLS_FUZZING_SUITE: SupportedCipherSuite = SupportedCipherSuite::Tls12(&Tls12CipherSuite {
-    common: CipherSuiteCommon {
-        suite: CipherSuite::Unknown(0xff12),
-        hash_provider: &Hash,
-        confidentiality_limit: u64::MAX,
-    },
-    kx: KeyExchangeAlgorithm::ECDHE,
-    sign: &[SIGNATURE_SCHEME],
-    prf_provider: &tls12::PrfUsingHmac(&Hmac),
-    aead_alg: &Aead,
-});
+pub static TLS_FUZZING_SUITE: SupportedCipherSuite =
+    SupportedCipherSuite::Tls12(&Tls12CipherSuite {
+        common: CipherSuiteCommon {
+            suite: CipherSuite::Unknown(0xff12),
+            hash_provider: &Hash,
+            confidentiality_limit: u64::MAX,
+        },
+        protocol_version: rustls::version::TLS12_VERSION,
+        kx: KeyExchangeAlgorithm::ECDHE,
+        sign: &[SIGNATURE_SCHEME],
+        prf_provider: &tls12::PrfUsingHmac(&Hmac),
+        aead_alg: &Aead,
+    });
+
+#[derive(Debug, Default)]
+pub struct Ticketer;
+
+impl ProducesTickets for Ticketer {
+    fn enabled(&self) -> bool {
+        true
+    }
+
+    fn lifetime(&self) -> u32 {
+        60 * 60 * 6
+    }
+
+    fn encrypt(&self, plain: &[u8]) -> Option<Vec<u8>> {
+        Some(plain.to_vec())
+    }
+
+    fn decrypt(&self, cipher: &[u8]) -> Option<Vec<u8>> {
+        Some(cipher.to_vec())
+    }
+}
 
 struct Hash;
 
@@ -138,7 +177,7 @@ impl hash::Context for HashContext {
     }
 
     fn fork(&self) -> Box<dyn hash::Context> {
-        Box::new(HashContext)
+        Box::new(Self)
     }
 
     fn finish(self: Box<Self>) -> hash::Output {
@@ -190,10 +229,6 @@ impl crypto::ActiveKeyExchange for ActiveKeyExchange {
         KX_PEER_SHARE
     }
 
-    fn ffdhe_group(&self) -> Option<FfdheGroup<'static>> {
-        None
-    }
-
     fn group(&self) -> NamedGroup {
         NamedGroup::from(0xfe00)
     }
@@ -205,10 +240,6 @@ struct KeyExchangeGroup;
 impl crypto::SupportedKxGroup for KeyExchangeGroup {
     fn start(&self) -> Result<Box<dyn crypto::ActiveKeyExchange>, Error> {
         Ok(Box::new(ActiveKeyExchange))
-    }
-
-    fn ffdhe_group(&self) -> Option<FfdheGroup<'static>> {
-        None
     }
 
     fn name(&self) -> NamedGroup {
@@ -275,7 +306,7 @@ struct Tls13Cipher;
 impl MessageEncrypter for Tls13Cipher {
     fn encrypt(
         &mut self,
-        m: OutboundPlainMessage,
+        m: OutboundPlainMessage<'_>,
         seq: u64,
     ) -> Result<OutboundOpaqueMessage, Error> {
         let total_len = self.encrypted_payload_len(m.payload.len());
@@ -344,7 +375,7 @@ struct Tls12Cipher;
 impl MessageEncrypter for Tls12Cipher {
     fn encrypt(
         &mut self,
-        m: OutboundPlainMessage,
+        m: OutboundPlainMessage<'_>,
         seq: u64,
     ) -> Result<OutboundOpaqueMessage, Error> {
         let total_len = self.encrypted_payload_len(m.payload.len());
@@ -444,9 +475,13 @@ pub struct SigningKey;
 impl sign::SigningKey for SigningKey {
     fn choose_scheme(&self, offered: &[SignatureScheme]) -> Option<Box<dyn sign::Signer>> {
         match offered.contains(&SIGNATURE_SCHEME) {
-            true => Some(Box::new(SigningKey)),
+            true => Some(Box::new(Self)),
             false => None,
         }
+    }
+
+    fn public_key(&self) -> Option<SubjectPublicKeyInfoDer<'_>> {
+        None
     }
 
     fn algorithm(&self) -> SignatureAlgorithm {

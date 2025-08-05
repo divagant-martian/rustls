@@ -5,28 +5,28 @@ use core::fmt::Debug;
 use pki_types::PrivateKeyDer;
 use zeroize::Zeroize;
 
+#[cfg(doc)]
+use crate::Tls12CipherSuite;
 use crate::msgs::ffdhe_groups::FfdheGroup;
 use crate::sign::SigningKey;
 use crate::sync::Arc;
 pub use crate::webpki::{
-    verify_tls12_signature, verify_tls13_signature, verify_tls13_signature_with_raw_key,
-    WebPkiSupportedAlgorithms,
+    WebPkiSupportedAlgorithms, verify_tls12_signature, verify_tls13_signature,
+    verify_tls13_signature_with_raw_key,
 };
-#[cfg(all(doc, feature = "tls12"))]
-use crate::Tls12CipherSuite;
 #[cfg(doc)]
 use crate::{
-    client, crypto, server, sign, ClientConfig, ConfigBuilder, ServerConfig, SupportedCipherSuite,
-    Tls13CipherSuite,
+    ClientConfig, ConfigBuilder, ServerConfig, SupportedCipherSuite, Tls13CipherSuite, client,
+    crypto, server, sign,
 };
-use crate::{suites, Error, NamedGroup, ProtocolVersion, SupportedProtocolVersion};
+use crate::{Error, NamedGroup, ProtocolVersion, SupportedProtocolVersion, suites};
 
 /// *ring* based CryptoProvider.
 #[cfg(feature = "ring")]
 pub mod ring;
 
 /// aws-lc-rs-based CryptoProvider.
-#[cfg(feature = "aws_lc_rs")]
+#[cfg(feature = "aws-lc-rs")]
 pub mod aws_lc_rs;
 
 /// TLS message encryption/decryption interfaces.
@@ -38,7 +38,6 @@ pub mod hash;
 /// HMAC interfaces.
 pub mod hmac;
 
-#[cfg(feature = "tls12")]
 /// Cryptography specific to TLS1.2.
 pub mod tls12;
 
@@ -61,12 +60,11 @@ pub use crate::suites::CipherSuiteCommon;
 /// This crate comes with two built-in options, provided as
 /// `CryptoProvider` structures:
 ///
-/// - [`crypto::aws_lc_rs::default_provider`]: (behind the `aws_lc_rs` feature,
-///   which is enabled by default).  This provider uses the [aws-lc-rs](https://github.com/aws/aws-lc-rs)
+/// - [`crypto::aws_lc_rs::default_provider`]: (behind the `aws_lc_rs` crate feature).
+///   This provider uses the [aws-lc-rs](https://github.com/aws/aws-lc-rs)
 ///   crate.  The `fips` crate feature makes this option use FIPS140-3-approved cryptography.
-/// - [`crypto::ring::default_provider`]: (behind the `ring` crate feature, which
-///   is optional).  This provider uses the [*ring*](https://github.com/briansmith/ring)
-///   crate.
+/// - [`crypto::ring::default_provider`]: (behind the `ring` crate feature).
+///   This provider uses the [*ring*](https://github.com/briansmith/ring) crate.
 ///
 /// This structure provides defaults. Everything in it can be overridden at
 /// runtime by replacing field values as needed.
@@ -110,20 +108,20 @@ pub use crate::suites::CipherSuiteCommon;
 ///
 /// # Making a custom `CryptoProvider`
 ///
-/// Your goal will be to populate a [`crypto::CryptoProvider`] struct instance.
+/// Your goal will be to populate an instance of this `CryptoProvider` struct.
 ///
 /// ## Which elements are required?
 ///
-/// There is no requirement that the individual elements (`SupportedCipherSuite`, `SupportedKxGroup`,
-/// `SigningKey`, etc.) come from the same crate.  It is allowed and expected that uninteresting
+/// There is no requirement that the individual elements ([`SupportedCipherSuite`], [`SupportedKxGroup`],
+/// [`SigningKey`], etc.) come from the same crate.  It is allowed and expected that uninteresting
 /// elements would be delegated back to one of the default providers (statically) or a parent
 /// provider (dynamically).
 ///
 /// For example, if we want to make a provider that just overrides key loading in the config builder
-/// API ([`ConfigBuilder::with_single_cert`] etc.), it might look like this:
+/// API (with [`ConfigBuilder::with_single_cert`], etc.), it might look like this:
 ///
 /// ```
-/// # #[cfg(feature = "aws_lc_rs")] {
+/// # #[cfg(feature = "aws-lc-rs")] {
 /// # use std::sync::Arc;
 /// # mod fictious_hsm_api { pub fn load_private_key(key_der: pki_types::PrivateKeyDer<'static>) -> ! { unreachable!(); } }
 /// use rustls::crypto::aws_lc_rs;
@@ -160,8 +158,8 @@ pub use crate::suites::CipherSuiteCommon;
 ///
 /// # Example code
 ///
-/// See [provider-example/] for a full client and server example that uses
-/// cryptography from the [rust-crypto] and [dalek-cryptography] projects.
+/// See custom [`provider-example/`] for a full client and server example that uses
+/// cryptography from the [`RustCrypto`] and [`dalek-cryptography`] projects.
 ///
 /// ```shell
 /// $ cargo run --example client | head -3
@@ -171,15 +169,16 @@ pub use crate::suites::CipherSuiteCommon;
 /// Content-Length: 19899
 /// ```
 ///
-/// [provider-example/]: https://github.com/rustls/rustls/tree/main/provider-example/
-/// [rust-crypto]: https://github.com/rustcrypto
-/// [dalek-cryptography]: https://github.com/dalek-cryptography
+/// [`provider-example/`]: https://github.com/rustls/rustls/tree/main/provider-example/
+/// [`RustCrypto`]: https://github.com/RustCrypto
+/// [`dalek-cryptography`]: https://github.com/dalek-cryptography
 ///
 /// # FIPS-approved cryptography
 /// The `fips` crate feature enables use of the `aws-lc-rs` crate in FIPS mode.
 ///
 /// You can verify the configuration at runtime by checking
 /// [`ServerConfig::fips()`]/[`ClientConfig::fips()`] return `true`.
+#[allow(clippy::exhaustive_structs)]
 #[derive(Debug, Clone)]
 pub struct CryptoProvider {
     /// List of supported ciphersuites, in preference order -- the first element
@@ -212,7 +211,7 @@ pub struct CryptoProvider {
     /// Source of cryptographically secure random numbers.
     pub secure_random: &'static dyn SecureRandom,
 
-    /// Provider for loading private [SigningKey]s from [PrivateKeyDer].
+    /// Provider for loading private [`SigningKey`]s from [`PrivateKeyDer`].
     pub key_provider: &'static dyn KeyProvider,
 }
 
@@ -246,7 +245,11 @@ impl CryptoProvider {
         }
 
         let provider = Self::from_crate_features()
-            .expect("no process-level CryptoProvider available -- call CryptoProvider::install_default() before this point");
+            .expect(r###"
+Could not automatically determine the process-level CryptoProvider from Rustls crate features.
+Call CryptoProvider::install_default() before this point to select a provider manually, or make sure exactly one of the 'aws-lc-rs' and 'ring' features is enabled.
+See the documentation of the CryptoProvider type for more information.
+            "###);
         // Ignore the error resulting from us losing a race, and accept the outcome.
         let _ = provider.install_default();
         Self::get_default().unwrap()
@@ -261,7 +264,7 @@ impl CryptoProvider {
     fn from_crate_features() -> Option<Self> {
         #[cfg(all(
             feature = "ring",
-            not(feature = "aws_lc_rs"),
+            not(feature = "aws-lc-rs"),
             not(feature = "custom-provider")
         ))]
         {
@@ -269,7 +272,7 @@ impl CryptoProvider {
         }
 
         #[cfg(all(
-            feature = "aws_lc_rs",
+            feature = "aws-lc-rs",
             not(feature = "ring"),
             not(feature = "custom-provider")
         ))]
@@ -323,7 +326,7 @@ pub trait SecureRandom: Send + Sync + Debug {
     }
 }
 
-/// A mechanism for loading private [SigningKey]s from [PrivateKeyDer].
+/// A mechanism for loading private [`SigningKey`]s from [`PrivateKeyDer`].
 ///
 /// This trait is intended to be used with private key material that is sourced from DER,
 /// such as a private-key that may be present on-disk. It is not intended to be used with
@@ -391,19 +394,16 @@ pub trait SupportedKxGroup: Send + Sync + Debug {
         })
     }
 
-    /// FFDHE group the `SupportedKxGroup` operates in.
+    /// FFDHE group the `SupportedKxGroup` operates in, if any.
     ///
-    /// Return `None` if this group is not a FFDHE one.
+    /// The default implementation returns `None`, so non-FFDHE groups (the
+    /// most common) do not need to do anything.
     ///
-    /// The default implementation calls `FfdheGroup::from_named_group`: this function
-    /// is extremely linker-unfriendly so it is recommended all key exchange implementers
-    /// provide this function.
-    ///
-    /// `rustls::ffdhe_groups` contains suitable values to return from this,
-    /// for example [`rustls::ffdhe_groups::FFDHE2048`][crate::ffdhe_groups::FFDHE2048].
+    /// FFDHE groups must implement this. `rustls::ffdhe_groups` contains
+    /// suitable values to return, for example
+    /// [`rustls::ffdhe_groups::FFDHE2048`][crate::ffdhe_groups::FFDHE2048].
     fn ffdhe_group(&self) -> Option<FfdheGroup<'static>> {
-        #[allow(deprecated)]
-        FfdheGroup::from_named_group(self.name())
+        None
     }
 
     /// Named group the SupportedKxGroup operates in.
@@ -415,13 +415,6 @@ pub trait SupportedKxGroup: Send + Sync + Debug {
     /// Return `true` if this is backed by a FIPS-approved implementation.
     fn fips(&self) -> bool {
         false
-    }
-
-    /// Return `true` if this should be offered/selected with the given version.
-    ///
-    /// The default implementation returns true for all versions.
-    fn usable_for_version(&self, _version: ProtocolVersion) -> bool {
-        true
     }
 }
 
@@ -472,7 +465,7 @@ pub trait ActiveKeyExchange: Send + Sync {
         peer_pub_key: &[u8],
         tls_version: &SupportedProtocolVersion,
     ) -> Result<SharedSecret, Error> {
-        if tls_version.version != ProtocolVersion::TLSv1_2 {
+        if tls_version.version() != ProtocolVersion::TLSv1_2 {
             return self.complete(peer_pub_key);
         }
 
@@ -576,17 +569,14 @@ pub trait ActiveKeyExchange: Send + Sync {
 
     /// FFDHE group the `ActiveKeyExchange` is operating in.
     ///
-    /// Return `None` if this group is not a FFDHE one.
+    /// The default implementation returns `None`, so non-FFDHE groups (the
+    /// most common) do not need to do anything.
     ///
-    /// The default implementation calls `FfdheGroup::from_named_group`: this function
-    /// is extremely linker-unfriendly so it is recommended all key exchange implementers
-    /// provide this function.
-    ///
-    /// `rustls::ffdhe_groups` contains suitable values to return from this,
-    /// for example [`rustls::ffdhe_groups::FFDHE2048`][crate::ffdhe_groups::FFDHE2048].
+    /// FFDHE groups must implement this. `rustls::ffdhe_groups` contains
+    /// suitable values to return, for example
+    /// [`rustls::ffdhe_groups::FFDHE2048`][crate::ffdhe_groups::FFDHE2048].
     fn ffdhe_group(&self) -> Option<FfdheGroup<'static>> {
-        #[allow(deprecated)]
-        FfdheGroup::from_named_group(self.group())
+        None
     }
 
     /// Return the group being used.
@@ -594,6 +584,7 @@ pub trait ActiveKeyExchange: Send + Sync {
 }
 
 /// The result from [`SupportedKxGroup::start_and_complete()`].
+#[allow(clippy::exhaustive_structs)]
 pub struct CompletedKeyExchange {
     /// Which group was used.
     pub group: NamedGroup,
@@ -686,7 +677,7 @@ impl From<Vec<u8>> for SharedSecret {
 ///     .with_no_client_auth();
 /// # }
 /// ```
-#[cfg(all(feature = "aws_lc_rs", any(feature = "fips", docsrs)))]
+#[cfg(all(feature = "aws-lc-rs", any(feature = "fips", docsrs)))]
 #[cfg_attr(docsrs, doc(cfg(feature = "fips")))]
 pub fn default_fips_provider() -> CryptoProvider {
     aws_lc_rs::default_provider()
