@@ -746,9 +746,7 @@ pub trait PacketKey: Send + Sync {
         _packet_number: u64,
         _header: &[u8],
         _payload: &mut [u8],
-    ) -> Result<Tag, Error> {
-        Err(Error::EncryptError)
-    }
+    ) -> Result<Tag, Error>;
 
     /// Decrypt a QUIC packet
     ///
@@ -780,9 +778,7 @@ pub trait PacketKey: Send + Sync {
         _packet_number: u64,
         _header: &[u8],
         _payload: &'a mut [u8],
-    ) -> Result<&'a [u8], Error> {
-        Err(Error::DecryptError)
-    }
+    ) -> Result<&'a [u8], Error>;
 
     /// Tag length for the underlying AEAD algorithm
     fn tag_len(&self) -> usize;
