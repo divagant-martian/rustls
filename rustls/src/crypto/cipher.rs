@@ -362,3 +362,18 @@ impl MessageDecrypter for InvalidMessageDecrypter {
         Err(Error::DecryptError)
     }
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Using test values provided in the spec
+    #[test]
+    fn multipath_nonce() {
+        const PATH_ID: u32 = 3;
+        const PN: u64 = 54321;
+        const IV: [u8; 16] = 0x6b26114b9cba2b63a9e8dd4fu128.to_be_bytes();
+        const EXPECTED_NONCE: [u8; 16] = 0x6b2611489cba2b63a9e8097eu128.to_be_bytes();
+        let nonce = Nonce::for_path(PATH_ID, &Iv::copy(&IV[4..]), PN).0;
+        assert_eq!(EXPECTED_NONCE[4..], nonce);
+    }
+}
